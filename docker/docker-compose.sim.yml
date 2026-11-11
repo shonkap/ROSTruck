@@ -1,0 +1,44 @@
+# Full simulation: ArduPilot SITL (Rover 4.7.2) + Gazebo Harmonic + ROS2 Humble.
+#
+#   docker compose -f docker/docker-compose.sim.yml up --build -d
+#   docker compose -f docker/docker-compose.sim.yml exec sim bash
+#   (inside)  ./sim/run_sim.sh            # see README.md "Simulation"
+#
+# GUI (Gazebo, RViz): http://localhost:6080/vnc.html
+# Truck web page:     http://localhost:8080
+# Real FC from here:  host runs scripts/fc_udp_forward.py, then
+#   ros2 launch fc_bridge fc_bridge.launch.py connection:=udpin:0.0.0.0:14550
+# Ground station on the host (QGroundControl / Mission Planner / MAVProxy):
+#   TCP 127.0.0.1:5762 -> SITL's second MAVLink port.
+services:
+  sim:
+    build:
+      context: ..
+      dockerfile: docker/sitl.Dockerfile
+    image: rctruck/sim:humble-harmonic
+    init: true
+    shm_size: 1gb              # DDS shared memory + camera images
+    mem_limit: 10g
+    volumes:
+      - ..:/workspace
+      - sim-build:/workspace/ros2_ws/build
+      - sim-install:/workspace/ros2_ws/install
+      - sim-log:/workspace/ros2_ws/log
+    working_dir: /workspace
+    ports:
+      - "127.0.0.1:6080:6080"          # noVNC desktop
+      - "127.0.0.1:5762:5762"          # SITL MAVLink for a GCS on the host
+      - "127.0.0.1:8080:8080"          # truck web page (map, waypoints, tasks)
+      - "127.0.0.1:14550:14550/udp"    # real FC via scripts/fc_udp_forward.py on the host
+    environment:
+      - ROS_DOMAIN_ID=0
+    stdin_open: true
+    tty: true
+
+volumes:
+  sim-build:
+    name: rctruck-sim-build
+  sim-install:
+    name: rctruck-sim-install
+  sim-log:
+    name: rctruck-sim-log

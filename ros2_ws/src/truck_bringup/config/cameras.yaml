@@ -1,0 +1,14 @@
+# stereo_camera_node settings for the truck. See stereo_camera_node.py for sources.
+stereo_camera_node:
+  ros__parameters:
+    mode: dual              # dual | side_by_side
+    left_source: "0"        # USB: "0"/"/dev/video0"; CSI: "csi:0"
+    right_source: "2"       # USB webcams usually create 2 nodes each -> 0 and 2
+    width: 640
+    height: 480
+    fps: 15
+    flip: 0                 # CSI only: 2 = upside-down mounting
+    swap: false
+    max_skew_ms: 15.0
+    publish_compressed: false
+    jpeg_quality: 90

@@ -1,0 +1,8 @@
+{
+    "ROS2.distro": "humble",
+    "python.analysis.extraPaths": [
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages",
+        "${workspaceFolder}/ros2_ws/src/fc_bridge"
+    ]
+}

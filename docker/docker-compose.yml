@@ -1,0 +1,65 @@
+# Workstation (x86) dev setup. For the truck itself see docker-compose.jetson.yml.
+#
+#   docker compose -f docker/docker-compose.yml up --build -d
+#   docker compose -f docker/docker-compose.yml exec dev bash
+#
+# Inside `dev`, the bridge can talk to:
+#   - the fake FC:  connection:=udpin:0.0.0.0:14551   (fake_fc pushes to dev:14551)
+#   - the real FC:  connection:=udpin:0.0.0.0:14550   (run scripts/fc_udp_forward.py
+#                   on the host; Docker Desktop can't pass USB devices through)
+
+x-dev-ram-limit: &dev-ram-limit
+  # Was 2g to mimic the Jetson Nano's RAM, but VS Code Server + Pylance + the
+  # Claude Code extension alone exceed that, so the container got OOM-killed
+  # (exit 137) and the editor "crashed" on Reopen in Container. Measure the
+  # truck's real memory use on the Jetson itself (tegrastats) instead.
+  mem_limit: 8g
+  memswap_limit: 8g
+
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: docker/dev.Dockerfile
+    <<: *dev-ram-limit
+    init: true
+    volumes:
+      - ..:/workspace
+      - ros2-build:/workspace/ros2_ws/build
+      - ros2-install:/workspace/ros2_ws/install
+      - ros2-log:/workspace/ros2_ws/log
+    working_dir: /workspace
+    ports:
+      - "127.0.0.1:14550:14550/udp"   # from scripts/fc_udp_forward.py on the host
+    # Native Docker Engine only (not Docker Desktop): pass the FC straight in
+    # instead of using the UDP forwarder, then use connection:=/dev/fc0.
+    # devices:
+    #   - /dev/fc0:/dev/fc0
+    stdin_open: true
+    tty: true
+    networks:
+      - fc-net
+    depends_on:
+      - fake_fc
+
+  # Fake ArduRover: streams telemetry, obeys GUIDED speed/turn-rate targets.
+  fake_fc:
+    build:
+      context: ..
+      dockerfile: docker/sim.Dockerfile
+    init: true
+    mem_limit: 256m
+    networks:
+      - fc-net
+
+networks:
+  fc-net:
+
+volumes:
+  # Named per ROS distro so a distro switch never reuses stale build output.
+  ros2-build:
+    name: rctruck-humble-build
+  ros2-install:
+    name: rctruck-humble-install
+  ros2-log:
+    name: rctruck-humble-log

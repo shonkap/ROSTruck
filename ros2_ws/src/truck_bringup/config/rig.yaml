@@ -1,0 +1,18 @@
+# Physical layout of the REAL truck (measure yours; metres / radians).
+# base_link = centre of the chassis, x forward, y left, z up.
+# Simulation equivalents live in sim/gazebo/models/ground_pounder/make_model.py.
+fc_x: 0.0          # where the FC (its IMU) sits relative to base_link
+fc_y: 0.0
+fc_z: 0.0
+cam_x: 0.16        # midpoint between the two lenses
+cam_y: 0.0
+cam_z: 0.12
+cam_pitch: 0.10    # + = tilted down
+baseline: 0.10     # lens centre to lens centre (the calibration measures this precisely)
+# RPLidar A1, 260 mm off the ground near the front. Keep the cameras BELOW its
+# scan plane (anything in the plane blocks the beams).
+lidar_x: 0.12      # forward of base_link
+lidar_y: 0.0
+lidar_z: 0.13      # above base_link (260 mm off the ground - ~130 mm base_link height)
+lidar_yaw: 0.0     # rad; 3.14159 if the scan comes out backwards (check in RViz:
+                   # an object in front of the truck must appear at +x)

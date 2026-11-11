@@ -1,0 +1,12 @@
+# Non-root USB-serial access for the SEQURE H743 flight controller (ArduRover).
+# Confirmed via `lsusb`: idVendor=1209, idProduct=5741 ("Generic SequreH743-BL").
+#
+# Also adds a stable symlink (/dev/fc0) so connection strings don't depend on
+# which /dev/ttyACM* number Linux happens to assign this boot.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="5741", MODE="0660", GROUP="dialout", SYMLINK+="fc0"
+
+# RPLidar A1 (Slamtec, CP2102 USB-serial bridge, idVendor=10c4 idProduct=ea60) -> /dev/rplidar.
+# NOTE: many cheap USB-serial adapters use the same CP2102 IDs; if you plug in
+# another one, it gets /dev/rplidar too - unplug it or narrow this rule with
+# ATTRS{serial}=="..." (see: udevadm info -a -n /dev/ttyUSB0 | grep serial).
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", MODE="0660", GROUP="dialout", SYMLINK+="rplidar"

@@ -1,0 +1,43 @@
+# On the Jetson (native Docker Engine + NVIDIA container runtime).
+# First time: ./scripts/jetson_setup.sh   (installs everything, builds this)
+#
+#   docker compose -f docker/docker-compose.jetson.yml up -d          # FC bridge + cameras
+#   docker compose -f docker/docker-compose.jetson.yml logs -f
+#   docker compose -f docker/docker-compose.jetson.yml run --rm truck bash   # a shell
+#
+# Calibrate the cameras (needs a monitor on the Jetson, or use --remote from the PC):
+#   xhost +local:   (once per login, on the Jetson desktop)
+#   docker compose -f docker/docker-compose.jetson.yml run --rm truck \
+#       python3 /workspace/scripts/stereo_calibrate.py run
+services:
+  truck:
+    build:
+      context: ..
+      dockerfile: docker/jetson.Dockerfile
+      args:
+        BASE_IMAGE: ${RCTRUCK_BASE_IMAGE:-dustynv/ros:humble-ros-base-l4t-r32.7.1}
+    image: rctruck/truck:humble
+    runtime: nvidia            # GPU/CUDA OpenCV, CSI camera ISP
+    network_mode: host         # DDS discovery with the PC (RViz, SLAM, teleop)
+    ipc: host                  # DDS shared-memory transport
+    restart: unless-stopped
+    # All of /dev, but only cameras (V4L2, major 81), the FC (ttyACM, major 166)
+    # and USB-serial adapters (ttyUSB, major 188 - the RPLidar) are allowed - so a camera or the FC can be (re)plugged while
+    # running and a missing /dev/videoN never stops the container from starting.
+    volumes:
+      - /dev:/dev
+      - /tmp/argus_socket:/tmp/argus_socket        # CSI cameras (nvarguscamerasrc)
+      - /tmp/.X11-unix:/tmp/.X11-unix              # calibrator GUI on the Jetson's screen
+      # Calibration persists on the host and stays in git with the rig.
+      - ../ros2_ws/src/truck_bringup/config/camera_info:/workspace/ros2_ws/src/truck_bringup/config/camera_info
+      - truck-ros-home:/home/dev/.ros              # rtabmap.db, logs
+    device_cgroup_rules:
+      - 'c 81:* rmw'
+      - 'c 166:* rmw'
+      - 'c 188:* rmw'                                # ttyUSB: RPLidar (/dev/rplidar)
+    environment:
+      - ROS_DOMAIN_ID=0
+      - DISPLAY=${DISPLAY:-:0}
+
+volumes:
+  truck-ros-home:

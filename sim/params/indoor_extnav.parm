@@ -1,0 +1,14 @@
+# Indoor / no-GPS overlay (sim.launch.py indoor:=true). Same settings the REAL
+# truck needs for the Jetson to drive indoors - the EKF navigates on the SLAM
+# pose fed by fc_bridge (vision_pose: true) instead of GPS.
+GPS1_TYPE 0          # no GPS at all (in the sim: also removes SITL's fake GPS)
+VISO_TYPE 1          # external nav over MAVLink (VISION_POSITION_ESTIMATE)
+VISO_DELAY_MS 50     # camera -> SLAM -> FC latency, roughly
+EK3_SRC1_POSXY 6     # horizontal position from external nav
+EK3_SRC1_VELXY 6     # horizontal velocity from external nav
+EK3_SRC1_POSZ 1      # height from the barometer (it's a ground vehicle)
+EK3_SRC1_VELZ 0
+EK3_SRC1_YAW 6       # heading from SLAM too (compass is unreliable indoors)
+COMPASS_USE 0
+COMPASS_USE2 0
+COMPASS_USE3 0

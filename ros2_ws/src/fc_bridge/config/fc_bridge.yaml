@@ -1,0 +1,40 @@
+# The connection string is a launch argument (see launch/fc_bridge.launch.py)
+# so the same file works on the truck, in sim, and through the host forwarder.
+mavlink_bridge_node:
+  ros__parameters:
+    baud: 115200               # ignored by USB CDC, required by pymavlink
+    # Companion-computer identity on the MAVLink network.
+    source_system: 1
+    source_component: 191      # MAV_COMP_ID_ONBOARD_COMPUTER
+
+    poll_rate_hz: 100.0
+    imu_rate_hz: 20.0
+    gps_rate_hz: 5.0
+    battery_rate_hz: 2.0
+    link_timeout_s: 3.0
+    reconnect_period_s: 2.0
+
+    frame_id: fc_link
+    gps_frame_id: gps_link
+
+    # cmd_vel relay (only active while the FC is GUIDED + armed).
+    command_rate_hz: 10.0
+    cmd_timeout_s: 0.5         # stop the truck if cmd_vel goes quiet this long
+    max_yaw_rate_dps: 90.0     # keep <= ATC_STR_RAT_MAX on the FC (currently 120)
+    default_wp_speed: 2.0      # used until WP_SPEED is read from the FC
+
+    # Steering self-check: compares requested vs. measured turn rate and the
+    # steering servo outputs while GUIDED; learns per-direction minimum turn
+    # radius (cmd_vel is clamped to it) and recommends ATC_STR_RAT_FF /
+    # SERVO1/2_TRIM / TURN_RADIUS. Report on fc/steering_report.
+    steering_monitor: true
+    auto_apply: false          # true = write the recommended params to the FC
+    monitor_period_s: 10.0
+    limits_file: ~/.ros/steering_limits.yaml
+    param_log: ~/.ros/fc_param_changes.log   # every change, old -> new (for rollback)
+
+    # SLAM pose -> FC as external navigation, so GUIDED works indoors without
+    # GPS. Needs SLAM running, and on the FC: VISO_TYPE 1, EK3_SRC1_POSXY 6,
+    # EK3_SRC1_VELXY 6, EK3_SRC1_POSZ 1, EK3_SRC1_YAW 6 (see README).
+    vision_pose: false
+    vision_rate_hz: 15.0

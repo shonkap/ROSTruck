@@ -1,0 +1,75 @@
+<?xml version="1.0"?>
+<!--
+  Indoor mapping test: the Ground Pounder in a furnished 6 x 5 m room.
+  Physics at 1 kHz, lock-stepped with ArduPilot SITL by ArduPilotPlugin.
+  Regenerate the room/truck with the make_*.py scripts next to the models.
+-->
+<sdf version="1.9">
+  <world name="room">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+
+    <!-- ArduPilot home is set on the SITL command line; this keeps Gazebo's
+         frame consistent with it (x = east, y = north in gazeboXYZToNED). -->
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>47.6062</latitude_deg>
+      <longitude_deg>-122.3321</longitude_deg>
+      <elevation>50</elevation>
+      <heading_deg>0</heading_deg>
+    </spherical_coordinates>
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.7 0.7 0.75 1</background>
+      <shadows>false</shadows>
+      <grid>false</grid>
+    </scene>
+
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.9 0.9 0.85 1</diffuse>
+      <specular>0.1 0.1 0.1 1</specular>
+      <direction>-0.3 0.2 -0.9</direction>
+    </light>
+    <light type="point" name="ceiling_lamp">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 2.3 0 0 0</pose>
+      <diffuse>0.6 0.6 0.55 1</diffuse>
+      <attenuation><range>12</range><constant>0.6</constant><linear>0.05</linear><quadratic>0.01</quadratic></attenuation>
+    </light>
+
+    <!-- big ground plane under the room so nothing falls forever -->
+    <model name="ground">
+      <static>true</static>
+      <link name="link">
+        <pose>0 0 -0.02 0 0 0</pose>
+        <collision name="c"><geometry><plane><normal>0 0 1</normal><size>50 50</size></plane></geometry>
+          <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+        </collision>
+      </link>
+    </model>
+
+    <include>
+      <uri>model://living_room</uri>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+    <include>
+      <uri>model://ground_pounder</uri>
+      <pose>0 0 0.01 0 0 0</pose>
+    </include>
+  </world>
+</sdf>

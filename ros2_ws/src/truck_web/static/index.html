@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Truck Control</title>
+<style>
+  :root {
+    --bg: #f4f3ef; --panel: #ffffff; --ink: #1d1f21; --muted: #6b6f74; --line: #dedbd3;
+    --accent: #1f6feb; --ok: #2e7d32; --warn: #b26a00; --bad: #c62828; --path: #1f6feb;
+    --wp: #d9480f; --truck: #c62828;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16181b; --panel: #1f2226; --ink: #e8e6e1; --muted: #9aa0a6; --line: #33373c;
+            --accent: #58a6ff; --ok: #66bb6a; --warn: #ffb74d; --bad: #ef5350; --path: #58a6ff;
+            --wp: #ff8a50; --truck: #ff5252; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--ink); }
+  header { display: flex; gap: 12px; align-items: center; padding: 10px 16px;
+           border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  .pill { padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px;
+          color: var(--muted); white-space: nowrap; }
+  .pill.ok { color: var(--ok); border-color: var(--ok); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
+  .pill.bad { color: var(--bad); border-color: var(--bad); }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 12px; padding: 12px 16px;
+         height: calc(100vh - 54px); }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto; } #mapwrap { height: 60vh; } }
+  #mapwrap { position: relative; background: var(--panel); border: 1px solid var(--line);
+             border-radius: 8px; overflow: hidden; min-height: 300px; }
+  canvas { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+  #maphint { position: absolute; left: 10px; bottom: 8px; font-size: 12px; color: var(--muted);
+             background: var(--panel); padding: 2px 8px; border-radius: 6px; opacity: .9; }
+  #nomap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+           color: var(--muted); pointer-events: none; text-align: center; padding: 20px; }
+  aside { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+               margin: 0 0 8px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { font: inherit; padding: 7px 12px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--bg); color: var(--ink); cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.stop { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  textarea { width: 100%; min-height: 64px; font: inherit; padding: 8px; border-radius: 6px;
+             border: 1px solid var(--line); background: var(--bg); color: var(--ink); resize: vertical; }
+  .task { padding: 6px 0; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: baseline; }
+  .task:first-child { border-top: 0; }
+  .task .t { flex: 1; min-width: 0; }
+  .task .m { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .state-running, .state-dispatched { color: var(--accent); }
+  .state-succeeded { color: var(--ok); } .state-failed { color: var(--bad); } .state-canceled { color: var(--muted); }
+  .muted { color: var(--muted); font-size: 12px; }
+  .report { border-top: 1px solid var(--line); padding: 6px 0; white-space: pre-wrap; font-size: 13px; }
+  .x { border: 0; background: none; color: var(--muted); padding: 0 4px; }
+  ol#wps { margin: 6px 0 0; padding-left: 20px; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Ground Pounder</h1>
+  <span id="fc" class="pill">FC: ?</span>
+  <span id="bat" class="pill">battery ?</span>
+  <span id="active" class="pill">no task</span>
+  <span id="obst" class="pill" title="nearest obstacle in front (stereo camera guard / lidar from the bumper)">ahead: ?</span>
+  <span id="rear" class="pill" title="nearest obstacle behind the rear bumper (lidar)" style="display:none">behind: ?</span>
+  <span style="flex:1"></span>
+  <button class="stop" id="stop" title="Cancel all tasks (the RC transmitter is still the real kill switch)">STOP</button>
+</header>
+<main>
+  <div id="mapwrap">
+    <canvas id="map"></canvas>
+    <div id="nomap">No map yet - start SLAM (and drive a little, or run "Map room").</div>
+    <div id="maphint">click: add waypoint · right-click: remove last · drag: pan · wheel: zoom</div>
+  </div>
+  <aside>
+    <section>
+      <h2>Camera</h2>
+      <img id="cam" alt="" style="width:100%;border-radius:6px;display:none;background:#000">
+      <div id="camnone" class="muted">no camera image</div>
+    </section>
+    <section>
+      <h2>Go to</h2>
+      <div class="row">
+        <button class="primary" id="go" disabled>Drive waypoints</button>
+        <button id="clear">Clear</button>
+        <button id="center">Center on truck</button>
+      </div>
+      <ol id="wps"></ol>
+    </section>
+    <section>
+      <h2>Drive (hold)</h2>
+      <div style="display:flex;gap:12px;align-items:center">
+        <div id="pad" style="position:relative;width:150px;height:150px;border-radius:50%;border:2px solid var(--line);background:var(--bg);touch-action:none;flex:none">
+          <div id="knob" style="position:absolute;left:55px;top:55px;width:40px;height:40px;border-radius:50%;background:var(--accent);opacity:.8"></div>
+        </div>
+        <div class="muted" id="padinfo">Hold and drag: up = forward, sides = steer. Let go = stop. Needs GUIDED + armed and no running task. Arrow keys work too.</div>
+      </div>
+    </section>
+    <section>
+      <h2>Places</h2>
+      <div class="row">
+        <button id="placehere" title="Name the truck's current position">Save truck position</button>
+        <button id="placeclick" title="Then click the map">Save a spot on the map…</button>
+      </div>
+      <div id="places" style="margin-top:6px"></div>
+    </section>
+    <section>
+      <h2>Tasks</h2>
+      <div class="row">
+        <button id="maproom">Map room</button>
+        <button id="savemap" title="Save the current map (e.g. after mapping by driving with the transmitter)">Save map</button>
+        <button id="cancelall">Cancel all</button>
+      </div>
+      <div id="tasklist" style="margin-top:8px"></div>
+    </section>
+    <section>
+      <h2>Ask the planner</h2>
+      <textarea id="req" placeholder="e.g. Map the living room, then park by the couch"></textarea>
+      <div class="row" style="margin-top:8px"><button id="send">Send request</button>
+        <span class="muted" id="plannerhint"></span></div>
+      <div id="reports"></div>
+    </section>
+    <section>
+      <h2>Record</h2>
+      <div class="row">
+        <select id="recpreset" style="font:inherit;padding:6px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)">
+          <option value="slam">slam (cameras + IMU)</option><option value="light">light (no images)</option></select>
+        <button id="recbtn">Start recording</button>
+      </div>
+      <div id="recstat" class="muted" style="margin-top:6px">recorder not running</div>
+    </section>
+    <section>
+      <h2>Steering self-check</h2>
+      <div id="steer" class="muted">no data yet</div>
+    </section>
+  </aside>
+</main>
+<script>
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const token = qs.get('token');
+  const api = (p) => p + (token ? (p.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token) : '');
+  const $ = (id) => document.getElementById(id);
+  const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+  const canvas = $('map'), ctx = canvas.getContext('2d');
+  let mapImg = null, mapInfo = null, mapVersion = -1;
+  let state = {}, waypoints = [], camLoading = false, placeMode = false;
+  let view = { scale: 1, ox: 0, oy: 0, fitted: false };   // screen = img * scale + offset
+
+  async function post(path, body) {
+    const r = await fetch(api(path), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify(body) });
+    if (!r.ok) alert('Request failed: ' + (await r.text()));
+  }
+
+  // ---- coordinates: world (m) <-> map image pixel <-> screen
+  function worldToImg(x, y) {
+    const r = mapInfo.resolution;
+    return [(x - mapInfo.origin[0]) / r, mapInfo.height - (y - mapInfo.origin[1]) / r];
+  }
+  function imgToWorld(px, py) {
+    const r = mapInfo.resolution;
+    return [mapInfo.origin[0] + px * r, mapInfo.origin[1] + (mapInfo.height - py) * r];
+  }
+  const toScreen = (x, y) => { const [px, py] = worldToImg(x, y); return [px * view.scale + view.ox, py * view.scale + view.oy]; };
+  const toWorld = (sx, sy) => imgToWorld((sx - view.ox) / view.scale, (sy - view.oy) / view.scale);
+
+  function fit() {
+    if (!mapInfo) return;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    view.scale = Math.min(w / mapInfo.width, h / mapInfo.height) * 0.92;
+    view.ox = (w - mapInfo.width * view.scale) / 2;
+    view.oy = (h - mapInfo.height * view.scale) / 2;
+    view.fitted = true;
+  }
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = canvas.clientWidth * dpr; canvas.height = canvas.clientHeight * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+  window.addEventListener('resize', resize);
+
+  function draw() {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+    $('nomap').style.display = mapImg ? 'none' : 'flex';
+    if (!mapImg || !mapInfo) return;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(mapImg, view.ox, view.oy, mapInfo.width * view.scale, mapInfo.height * view.scale);
+    // 1 m grid ticks
+    const pxPerM = view.scale / mapInfo.resolution;
+    ctx.lineWidth = 1;
+    // planned path
+    if (state.path && state.path.length > 1) {
+      ctx.strokeStyle = css('--path'); ctx.lineWidth = 2.5; ctx.beginPath();
+      state.path.forEach(([x, y], i) => { const [sx, sy] = toScreen(x, y); i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy); });
+      ctx.stroke();
+    }
+    // waypoints
+    ctx.font = '12px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    waypoints.forEach(([x, y], i) => {
+      const [sx, sy] = toScreen(x, y);
+      ctx.fillStyle = css('--wp'); ctx.beginPath(); ctx.arc(sx, sy, 9, 0, 2 * Math.PI); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.fillText(String(i + 1), sx, sy + 0.5);
+    });
+    // named places
+    (state.places || []).forEach((pl) => {
+      const [sx, sy] = toScreen(pl.x, pl.y);
+      ctx.fillStyle = css('--ok'); ctx.beginPath();
+      ctx.moveTo(sx, sy - 9); ctx.lineTo(sx + 7, sy); ctx.lineTo(sx, sy + 9); ctx.lineTo(sx - 7, sy); ctx.closePath(); ctx.fill();
+      ctx.textAlign = 'left'; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.75)';
+      ctx.strokeText(pl.name, sx + 10, sy); ctx.fillStyle = '#fff'; ctx.fillText(pl.name, sx + 10, sy);
+    });
+    // truck
+    if (state.pose) {
+      const [x, y, yaw] = state.pose, [sx, sy] = toScreen(x, y);
+      const len = Math.max(14, 0.45 * pxPerM), wid = Math.max(9, 0.28 * pxPerM);
+      ctx.save(); ctx.translate(sx, sy); ctx.rotate(-yaw);
+      ctx.fillStyle = css('--truck'); ctx.beginPath();
+      ctx.moveTo(len / 2, 0); ctx.lineTo(-len / 2, wid / 2); ctx.lineTo(-len / 3, 0); ctx.lineTo(-len / 2, -wid / 2);
+      ctx.closePath(); ctx.fill(); ctx.restore();
+    }
+    // scale bar
+    const meters = pxPerM > 120 ? 0.5 : pxPerM > 40 ? 1 : 2;
+    ctx.strokeStyle = css('--ink'); ctx.lineWidth = 2; ctx.beginPath();
+    ctx.moveTo(w - 20 - meters * pxPerM, h - 18); ctx.lineTo(w - 20, h - 18); ctx.stroke();
+    ctx.fillStyle = css('--ink'); ctx.textAlign = 'right'; ctx.fillText(meters + ' m', w - 20, h - 30);
+  }
+
+  // ---- interaction
+  let drag = null;
+  canvas.addEventListener('pointerdown', (e) => { drag = { x: e.offsetX, y: e.offsetY, moved: false, ox: view.ox, oy: view.oy }; });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const dx = e.offsetX - drag.x, dy = e.offsetY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+    if (drag.moved) { view.ox = drag.ox + dx; view.oy = drag.oy + dy; draw(); }
+  });
+  canvas.addEventListener('pointerup', (e) => {
+    if (drag && !drag.moved && e.button === 0 && mapInfo) {
+      const p = toWorld(e.offsetX, e.offsetY).map((v) => Math.round(v * 100) / 100);
+      if (placeMode) {
+        placeMode = false; canvas.style.cursor = 'crosshair';
+        const name = prompt('Name for this place:');
+        if (name && name.trim()) post('/api/place', { name: name.trim(), x: p[0], y: p[1] });
+      } else {
+        waypoints.push(p);
+        renderWaypoints(); draw();
+      }
+    }
+    drag = null;
+  });
+  canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); waypoints.pop(); renderWaypoints(); draw(); });
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const f = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    view.ox = e.offsetX - (e.offsetX - view.ox) * f; view.oy = e.offsetY - (e.offsetY - view.oy) * f;
+    view.scale *= f; draw();
+  }, { passive: false });
+
+  function renderWaypoints() {
+    $('wps').innerHTML = waypoints.map(([x, y]) => `<li>(${x.toFixed(2)}, ${y.toFixed(2)}) m</li>`).join('');
+    $('go').disabled = waypoints.length === 0;
+  }
+  $('go').onclick = async () => { await post('/api/task', { type: 'goto', waypoints }); waypoints = []; renderWaypoints(); draw(); };
+  $('clear').onclick = () => { waypoints = []; renderWaypoints(); draw(); };
+  $('center').onclick = () => {
+    if (!state.pose || !mapInfo) return;
+    const [sx, sy] = toScreen(state.pose[0], state.pose[1]);
+    view.ox += canvas.clientWidth / 2 - sx; view.oy += canvas.clientHeight / 2 - sy; draw();
+  };
+  // ---- hold-to-drive pad (dead-man: commands stop the moment you let go)
+  const pad = $('pad'), knob = $('knob');
+  let drive = null, driveTimer = null;
+  const MAXV = 0.4, MAXW = 0.9;
+  function sendDrive() {
+    if (!drive) return;
+    fetch(api('/api/teleop'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(drive) }).then(async (r) => {
+        $('padinfo').textContent = r.ok ? `v ${drive ? drive.v.toFixed(2) : 0} m/s, turn ${drive ? drive.w.toFixed(2) : 0} rad/s`
+                                         : (await r.json()).error;
+      }).catch(() => {});
+  }
+  function padMove(e) {
+    const r = pad.getBoundingClientRect();
+    let dx = (e.clientX - r.left - 75) / 75, dy = (e.clientY - r.top - 75) / 75;
+    const n = Math.hypot(dx, dy); if (n > 1) { dx /= n; dy /= n; }
+    knob.style.left = (55 + dx * 55) + 'px'; knob.style.top = (55 + dy * 55) + 'px';
+    drive = { v: -dy * MAXV, w: -dx * MAXW };
+  }
+  function padStop() {
+    drive = null; clearInterval(driveTimer); driveTimer = null;
+    knob.style.left = '55px'; knob.style.top = '55px';
+  }
+  pad.addEventListener('pointerdown', (e) => { pad.setPointerCapture(e.pointerId); padMove(e); sendDrive(); driveTimer = setInterval(sendDrive, 100); });
+  pad.addEventListener('pointermove', (e) => { if (driveTimer) padMove(e); });
+  pad.addEventListener('pointerup', padStop);
+  pad.addEventListener('pointercancel', padStop);
+  window.addEventListener('blur', padStop);
+  const keys = {};
+  function keyDrive() {
+    const v = (keys.ArrowUp ? MAXV : 0) - (keys.ArrowDown ? MAXV : 0);
+    const w = (keys.ArrowLeft ? MAXW : 0) - (keys.ArrowRight ? MAXW : 0);
+    if (v || w) { drive = { v, w }; if (!driveTimer) { sendDrive(); driveTimer = setInterval(sendDrive, 100); } }
+    else padStop();
+  }
+  window.addEventListener('keydown', (e) => { if (e.target.tagName === 'TEXTAREA' || !e.key.startsWith('Arrow')) return; e.preventDefault(); keys[e.key] = true; keyDrive(); });
+  window.addEventListener('keyup', (e) => { if (!e.key.startsWith('Arrow')) return; keys[e.key] = false; keyDrive(); });
+
+  $('recbtn').onclick = () => {
+    const rec = (state.record || {}).recording;
+    post('/api/record', rec ? { action: 'stop' } : { action: 'start', preset: $('recpreset').value, seconds: 300 });
+  };
+
+  $('placehere').onclick = () => {
+    const name = prompt('Name for the truck\'s current position:');
+    if (name && name.trim()) post('/api/place', { name: name.trim(), here: true });
+  };
+  $('placeclick').onclick = () => { placeMode = true; canvas.style.cursor = 'copy'; };
+  $('places').addEventListener('click', (e) => {
+    const go = e.target.dataset.go, del = e.target.dataset.del;
+    if (go) post('/api/task', { type: 'goto', waypoints: [go] });
+    if (del && confirm('Delete place "' + del + '"?')) post('/api/place', { name: del, delete: true });
+  });
+  $('stop').onclick = () => post('/api/task', { type: 'stop', priority: 10 });
+  $('cancelall').onclick = () => post('/api/cancel', { id: 'all' });
+  $('maproom').onclick = () => post('/api/task', { type: 'map_room', max_minutes: 10 });
+  $('savemap').onclick = async () => {
+    const r = await fetch(api('/api/save_map'), { method: 'POST', body: '{}' });
+    alert((await r.json()).message);
+  };
+  $('send').onclick = async () => {
+    const text = $('req').value.trim(); if (!text) return;
+    await post('/api/task', { type: 'request', text }); $('req').value = '';
+  };
+
+  // ---- status rendering
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  function taskLine(t, cancellable) {
+    const what = t.type === 'goto' ? `goto ${(t.waypoints || []).length} pt` : t.type === 'request' ? `request: ${esc(t.text)}` : esc(t.type);
+    return `<div class="task"><div class="t"><b>#${t.id}</b> ${what} <span class="state-${t.state}">${t.state}</span>
+      <div class="m">${esc(t.source)} · ${esc(t.message)}</div></div>
+      ${cancellable ? `<button class="x" title="cancel" data-cancel="${t.id}">✕</button>` : ''}</div>`;
+  }
+  function render() {
+    const fc = state.fc_status || '';
+    const relaying = fc.includes('relaying_cmd_vel=True');
+    const m = fc.match(/mode=(\S+) armed=(\S+)/);
+    $('fc').textContent = m ? `FC ${m[1]}${m[2] === 'True' ? ' · armed' : ' · disarmed'}` : 'FC: ' + (fc || 'no link');
+    $('fc').className = 'pill ' + (relaying ? 'ok' : m ? 'warn' : 'bad');
+    $('fc').title = relaying ? 'GUIDED + armed: tasks can drive' : 'Tasks only move the truck when the FC is GUIDED and armed (switch on the transmitter)';
+    const b = state.battery;
+    $('bat').textContent = b && b.voltage ? `${b.voltage.toFixed(2)} V` + (b.percentage != null ? ` · ${Math.round(b.percentage * 100)}%` : '') : 'battery ?';
+    const o = state.obstacle, lf = state.lidar_front, rr = state.rear;
+    $('obst').textContent = (o == null && lf == null) ? 'ahead: clear'
+      : 'ahead: ' + [o != null ? `cam ${o.toFixed(2)} m` : null, lf != null ? `lidar ${lf.toFixed(2)} m` : null].filter(Boolean).join(' · ');
+    const worst = Math.min(o == null ? 99 : o - 0.25, lf == null ? 99 : lf);
+    $('obst').className = 'pill ' + (worst < 0.2 ? 'bad' : worst < 0.7 ? 'warn' : 'ok');
+    $('rear').style.display = (rr != null || lf != null) ? '' : 'none';
+    $('rear').textContent = rr == null ? 'behind: clear' : `behind: ${rr.toFixed(2)} m`;
+    $('rear').className = 'pill ' + (rr == null ? 'ok' : rr < 0.2 ? 'bad' : rr < 0.7 ? 'warn' : 'ok');
+    const camOk = state.camera_age != null && state.camera_age < 3;
+    $('cam').style.display = camOk ? 'block' : 'none';
+    $('camnone').style.display = camOk ? 'none' : 'block';
+    if (camOk && !camLoading) {
+      camLoading = true;
+      const im = new Image();
+      im.onload = () => { $('cam').src = im.src; camLoading = false; };
+      im.onerror = () => { camLoading = false; };
+      im.src = api('/api/camera.jpg?t=' + Date.now());
+    }
+    const tk = state.tasks || {};
+    $('active').textContent = tk.active ? `#${tk.active.id} ${tk.active.type}: ${tk.active.message || tk.active.state}` : 'no task';
+    $('active').className = 'pill ' + (tk.active ? 'ok' : '');
+    let html = '';
+    if (tk.active) html += taskLine(tk.active, true);
+    (tk.queue || []).forEach((t) => { html += taskLine(t, true); });
+    (tk.history || []).slice(0, 8).forEach((t) => { html += taskLine(t, false); });
+    $('tasklist').innerHTML = html || '<div class="muted">nothing yet</div>';
+    const planners = Object.entries(tk.modules || {}).filter(([, h]) => h.includes('request')).map(([n]) => n);
+    $('plannerhint').textContent = planners.length ? 'planner: ' + planners.join(', ') : 'no planner module running yet (requests are queued on tasks/requests)';
+    $('reports').innerHTML = (state.reports || []).slice(0, 5).map((r, i) => {
+      const tasks = r.tasks || [];
+      const list = tasks.map((t) => t.type === 'goto' ? `goto ${(t.waypoints || []).map((p) => '(' + p.map((v) => v.toFixed(1)).join(', ') + ')').join(' → ')}`
+                                   : t.type === 'map_room' ? `map_room (${t.max_minutes} min)` : esc(t.type)).join('; ');
+      const run = tasks.length && !r.submitted && !approved.has(r.request_id + ':' + r.received)
+        ? `<button data-run="${i}">Run these tasks</button>` : (r.submitted || approved.has(r.request_id + ':' + r.received) ? '<span class="muted">queued</span>' : '');
+      return `<div class="report"><b>${esc(r.title || 'Report')}</b> <span class="muted">${esc(r.received)} · ${esc(r.planner || '')}</span>\n${esc(r.text)}` +
+        (tasks.length ? `\n<span class="muted">tasks: ${list}</span>\n` : '') + run + '</div>';
+    }).join('');
+    const rc = state.record || {};
+    $('recbtn').textContent = rc.recording ? 'Stop recording' : 'Start recording';
+    $('recbtn').className = rc.recording ? 'stop' : '';
+    $('recstat').textContent = rc.recording
+      ? `● ${rc.name}: ${rc.seconds}/${Math.round(rc.limit)} s, ${rc.size_mb} MB (${rc.free_gb} GB free)`
+      : (rc.message ? `${rc.message} · ${rc.free_gb} GB free · ${rc.dir}` : 'recorder not running');
+    $('places').innerHTML = (state.places || []).map((pl) =>
+      `<div class="task"><div class="t">${esc(pl.name)} <span class="muted">(${pl.x.toFixed(2)}, ${pl.y.toFixed(2)})</span></div>
+       <button data-go="${esc(pl.name)}">Go</button><button class="x" title="delete" data-del="${esc(pl.name)}">✕</button></div>`).join('')
+      || '<div class="muted">none yet</div>';
+    const s = state.steering || {};
+    if (s.left || s.right) {
+      const side = (k) => { const d = s[k] || {}; return `${k}: ${d.ratio != null ? Math.round(d.ratio * 100) + '% of requested turn' : 'learning'}` +
+        (d.min_radius ? `, min radius ${d.min_radius.toFixed(2)} m` : ''); };
+      $('steer').innerHTML = `${side('left')}<br>${side('right')}` +
+        ((s.notes || []).length ? '<br>' + s.notes.map(esc).join('<br>') : '') +
+        (Object.keys(s.recommend || {}).length ? `<br>${s.auto_apply ? 'applying' : 'recommends'}: ${esc(JSON.stringify(s.recommend))}` : '');
+    }
+    draw();
+  }
+  const approved = new Set();
+  $('reports').addEventListener('click', async (e) => {
+    const i = e.target.dataset.run; if (i == null) return;
+    const r = (state.reports || [])[Number(i)]; if (!r) return;
+    approved.add(r.request_id + ':' + r.received);
+    for (const t of r.tasks) await post('/api/task', Object.assign({}, t, { source: 'llm (approved)' }));
+    render();
+  });
+  $('tasklist').addEventListener('click', (e) => { const id = e.target.dataset.cancel; if (id) post('/api/cancel', { id: Number(id) }); });
+
+  async function poll() {
+    try {
+      const r = await fetch(api('/api/state')); state = await r.json();
+      if (state.map && state.map.version !== mapVersion) {
+        const img = new Image();
+        img.onload = () => { mapImg = img; mapInfo = state.map; mapVersion = state.map.version; if (!view.fitted) fit(); draw(); };
+        img.src = api('/api/map.png?v=' + state.map.version);
+      }
+      render();
+    } catch (e) { $('fc').textContent = 'no connection to truck'; $('fc').className = 'pill bad'; }
+    setTimeout(poll, 500);
+  }
+  resize(); renderWaypoints(); poll();
+})();
+</script>
+</body>
+</html>
