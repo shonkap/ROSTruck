@@ -1,0 +1,26 @@
+# ROS2 / colcon
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Docker
+*.log
+
+# Editor
+.vscode/*
+!.vscode/settings.json
+
+# Simulation: generated (deterministic) room textures + SITL runtime files
+sim/gazebo/models/living_room/materials/
+sim/gazebo/models/living_room/model.sdf
+sim/.sitl/
+
+# Saved maps (RTAB-Map databases are large); keep places.json if you like
+maps/
+bags/
