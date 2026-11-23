@@ -2,8 +2,8 @@
 stereo_camera_node:
   ros__parameters:
     mode: dual              # dual | side_by_side
-    left_source: "0"        # USB: "0"/"/dev/video0"; CSI: "csi:0"
-    right_source: "2"       # USB webcams usually create 2 nodes each -> 0 and 2
+    left_source: "csi:0"    # USB: "0"/"/dev/video0"; CSI: "csi:0" (truck: 2x IMX219 on CSI)
+    right_source: "csi:1"   # USB webcams usually create 2 nodes each -> "0" and "2"
     width: 640
     height: 480
     fps: 15

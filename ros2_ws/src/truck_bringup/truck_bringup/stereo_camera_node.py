@@ -30,12 +30,11 @@ import cv2
 import rclpy
 import rclpy.time
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from sensor_msgs.srv import SetCameraInfo
 
 from truck_bringup import camera_info_yaml
-from truck_common.ros import run_node
+from truck_common.ros import CAMERA, run_node
 
 
 def csi_pipeline(sensor_id, width, height, fps, flip=0):
@@ -165,16 +164,16 @@ class StereoCameraNode(Node):
             self._info[side] = info
 
         self._img_pub = {s: self.create_publisher(Image, 'stereo/{}/image_raw'.format(s),
-                                                  qos_profile_sensor_data)
+                                                  CAMERA)
                          for s in ('left', 'right')}
         self._info_pub = {s: self.create_publisher(CameraInfo, 'stereo/{}/camera_info'.format(s),
-                                                   qos_profile_sensor_data)
+                                                   CAMERA)
                           for s in ('left', 'right')}
         self._jpeg_quality = int(g('jpeg_quality'))
         self._cmp_pub = {}
         if g('publish_compressed'):
             self._cmp_pub = {s: self.create_publisher(
-                CompressedImage, 'stereo/{}/image_raw/compressed'.format(s), qos_profile_sensor_data)
+                CompressedImage, 'stereo/{}/image_raw/compressed'.format(s), CAMERA)
                 for s in ('left', 'right')}
         for side in ('left', 'right'):
             self.create_service(SetCameraInfo, 'stereo/{}/set_camera_info'.format(side),

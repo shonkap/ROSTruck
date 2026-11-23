@@ -15,7 +15,7 @@ downstream (SLAM launch, calibration checks) is shared between sim and truck.
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
-from truck_common.ros import run_node
+from truck_common.ros import CAMERA, run_node
 
 
 class StereoRelay(Node):
@@ -29,9 +29,9 @@ class StereoRelay(Node):
         self._info_pub = {}
         for side in ('left', 'right'):
             self._img_pub[side] = self.create_publisher(
-                Image, 'stereo/{}/image_raw'.format(side), qos_profile_sensor_data)
+                Image, 'stereo/{}/image_raw'.format(side), CAMERA)
             self._info_pub[side] = self.create_publisher(
-                CameraInfo, 'stereo/{}/camera_info'.format(side), qos_profile_sensor_data)
+                CameraInfo, 'stereo/{}/camera_info'.format(side), CAMERA)
             self.create_subscription(
                 CameraInfo, 'gz/stereo/{}/camera_info'.format(side),
                 lambda m, s=side: self._on_info(s, m), qos_profile_sensor_data)

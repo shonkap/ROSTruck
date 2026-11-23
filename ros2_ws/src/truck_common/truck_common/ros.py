@@ -11,6 +11,11 @@ from std_msgs.msg import String
 LATCHED = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                      reliability=ReliabilityPolicy.RELIABLE)
 
+# Camera images/camera_info publishers. RELIABLE because image_proc's
+# RectifyNode (and rtabmap) subscribe reliable and ignore a best-effort
+# publisher; best-effort subscribers (e.g. over WiFi) still connect to it.
+CAMERA = QoSProfile(depth=5, reliability=ReliabilityPolicy.RELIABLE)
+
 
 def jmsg(obj):
     return String(data=json.dumps(obj))
