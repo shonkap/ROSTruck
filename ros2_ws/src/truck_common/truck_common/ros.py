@@ -1,4 +1,5 @@
 """ROS plumbing used by every node. Python 3.6."""
+import array
 import json
 import math
 
@@ -15,6 +16,15 @@ LATCHED = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
 # RectifyNode (and rtabmap) subscribe reliable and ignore a best-effort
 # publisher; best-effort subscribers (e.g. over WiFi) still connect to it.
 CAMERA = QoSProfile(depth=5, reliability=ReliabilityPolicy.RELIABLE)
+
+
+def u8(data):
+    """bytes -> what a uint8[] message field (Image.data, ...) takes without a copy loop.
+
+    Humble's generated setters check every element of anything that isn't an
+    array.array('B'): 0.7 s for one 640x480 bgr8 image on the Nano, vs 2 ms.
+    """
+    return array.array('B', data)
 
 
 def jmsg(obj):

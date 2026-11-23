@@ -6,6 +6,7 @@ in the SLAM map yet - a cat, a person, a box someone just put down.
 """
 import numpy as np
 from sensor_msgs.msg import PointCloud2, PointField
+from truck_common.ros import u8
 
 _FIELDS = [PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
@@ -62,7 +63,7 @@ def xy_to_cloud(points, frame_id, stamp):
     msg.height, msg.width = 1, len(pts)
     msg.fields, msg.is_bigendian, msg.is_dense = _FIELDS, False, True
     msg.point_step, msg.row_step = 12, 12 * len(pts)
-    msg.data = pts.tobytes()
+    msg.data = u8(pts.tobytes())
     return msg
 
 

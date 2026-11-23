@@ -34,7 +34,7 @@ from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from sensor_msgs.srv import SetCameraInfo
 
 from truck_bringup import camera_info_yaml
-from truck_common.ros import CAMERA, run_node
+from truck_common.ros import CAMERA, run_node, u8
 
 
 def csi_pipeline(sensor_id, width, height, fps, flip=0):
@@ -212,7 +212,7 @@ class StereoCameraNode(Node):
         img.height, img.width = frame.shape[0], frame.shape[1]
         img.encoding = 'bgr8'
         img.step = img.width * 3
-        img.data = frame.tobytes()
+        img.data = u8(frame.tobytes())
         return img
 
     def _tick(self):
@@ -255,7 +255,7 @@ class StereoCameraNode(Node):
                     cm.header.stamp = stamp
                     cm.header.frame_id = '{}_camera_optical_frame'.format(side)
                     cm.format = 'jpeg'
-                    cm.data = jpg.tobytes()
+                    cm.data = u8(jpg.tobytes())
                     self._cmp_pub[side].publish(cm)
             info = self._info[side]
             info.header.stamp = stamp
