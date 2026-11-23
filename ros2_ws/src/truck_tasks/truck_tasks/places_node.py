@@ -14,11 +14,10 @@ page lists/draws them. Saved to `file` on every change. Python 3.6.
 import json
 import os
 
-import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from truck_tasks.ros_common import LATCHED, PoseTracker, jparse
+from truck_common.ros import LATCHED, PoseTracker, jmsg, jparse, run_node
 
 
 def normalize(name):
@@ -119,17 +118,8 @@ class PlacesNode(Node):
         self._publish()
 
     def _publish(self):
-        self._pub.publish(String(data=json.dumps(self.book.list())))
+        self._pub.publish(jmsg(self.book.list()))
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = PlacesNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(PlacesNode, args)

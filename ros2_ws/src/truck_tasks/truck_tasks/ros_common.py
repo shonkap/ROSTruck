@@ -16,35 +16,17 @@ THE TASK BUS (all std_msgs/String carrying JSON, so any language/plugin can join
 
   CLI:  ros2 topic pub --once /tasks/submit std_msgs/msg/String "{data: '{\\"type\\": \\"map_room\\"}'}"
 """
-import json
-import math
 import time
 
 from nav_msgs.msg import OccupancyGrid
-from rclpy.duration import Duration
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from rclpy.time import Time
 from std_msgs.msg import String
 
+from truck_common.ros import LATCHED, jmsg, jparse
 from truck_tasks.planning import GridMap
-
-LATCHED = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
-                     reliability=ReliabilityPolicy.RELIABLE)
-
-
-def jmsg(obj):
-    return String(data=json.dumps(obj, default=str))
-
-
-def jparse(msg):
-    try:
-        return json.loads(msg.data)
-    except (ValueError, TypeError):
-        return None
 
 
 class MapCache(object):
-    """Latest /map as a GridMap."""
+    """Latest /map as a GridMap (and the raw message)."""
 
     def __init__(self, node, topic='map'):
         self.map = None
@@ -58,33 +40,6 @@ class MapCache(object):
         self.msg = msg
         self.map = GridMap(msg.data, i.width, i.height, i.resolution,
                            i.origin.position.x, i.origin.position.y)
-
-
-class PoseTracker(object):
-    """Robot pose (x, y, yaw) in the map frame from TF."""
-
-    def __init__(self, node, map_frame='map', base_frame='base_link', max_age=1.0):
-        import tf2_ros
-        self._node = node
-        self._buf = tf2_ros.Buffer()
-        self._listener = tf2_ros.TransformListener(self._buf, node)
-        self._map, self._base = map_frame, base_frame
-        self._max_age = max_age
-
-    def pose(self):
-        """(x, y, yaw), or None if unknown or older than max_age seconds - e.g.
-        visual odometry lost tracking (cameras too close to a wall)."""
-        try:
-            t = self._buf.lookup_transform(self._map, self._base, Time(), timeout=Duration(seconds=0.0))
-        except Exception:
-            return None
-        stamp = Time.from_msg(t.header.stamp)
-        age = (self._node.get_clock().now() - stamp).nanoseconds * 1e-9
-        if self._max_age and age > self._max_age:
-            return None
-        q = t.transform.rotation
-        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
-        return t.transform.translation.x, t.transform.translation.y, yaw
 
 
 class ModuleAnnouncer(object):

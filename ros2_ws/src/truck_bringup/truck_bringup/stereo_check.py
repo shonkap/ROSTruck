@@ -17,23 +17,12 @@ import math
 
 import cv2
 import numpy as np
-import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import CameraInfo, Image
 
 from truck_bringup.camera_info_yaml import baseline_m
-
-
-def image_to_bgr(msg):
-    buf = np.frombuffer(msg.data, dtype=np.uint8)
-    if msg.encoding in ('bgr8', 'rgb8'):
-        img = buf.reshape(msg.height, msg.step // 3, 3)[:, :msg.width]
-        return img[:, :, ::-1].copy() if msg.encoding == 'rgb8' else img.copy()
-    if msg.encoding in ('mono8', '8UC1'):
-        g = buf.reshape(msg.height, msg.step)[:, :msg.width]
-        return cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
-    raise ValueError('unsupported encoding ' + msg.encoding)
+from truck_bringup.stereo_pair import StereoPair
+from truck_common.images import image_to_bgr
+from truck_common.ros import run_node
 
 
 def rectify_maps(info):
@@ -91,33 +80,17 @@ class StereoCheck(Node):
         self._square = float(self.get_parameter('square').value)
         self._expected_b = float(self.get_parameter('expected_baseline').value)
         self._preview = self.get_parameter('preview').value
-        self._info = {'left': None, 'right': None}
-        self._img = {'left': None, 'right': None}
         self._maps = None
         self._feat, self._board_err, self._board_dist, self._cover = [], [], [], []
         self.done = False
-        for s in ('left', 'right'):
-            self.create_subscription(CameraInfo, 'stereo/{}/camera_info'.format(s),
-                                     lambda m, s=s: self._on_info(s, m), qos_profile_sensor_data)
-            self.create_subscription(Image, 'stereo/{}/image_raw'.format(s),
-                                     lambda m, s=s: self._on_img(s, m), qos_profile_sensor_data)
+        StereoPair(self, 'stereo/left/image_raw', 'stereo/right/image_raw', self._on_pair)
         self.get_logger().info('collecting {} stereo pairs...'.format(self._n))
 
-    def _on_info(self, side, msg):
-        self._info[side] = msg
+    def _on_pair(self, lmsg, rmsg, linfo, rinfo):
+        if not self.done:
+            self._process(image_to_bgr(lmsg), image_to_bgr(rmsg), linfo, rinfo)
 
-    def _on_img(self, side, msg):
-        self._img[side] = msg
-        l, r = self._img['left'], self._img['right']
-        if l is None or r is None or self._info['left'] is None or self._info['right'] is None:
-            return
-        if (l.header.stamp.sec, l.header.stamp.nanosec) != (r.header.stamp.sec, r.header.stamp.nanosec):
-            return
-        self._img = {'left': None, 'right': None}
-        self._process(image_to_bgr(l), image_to_bgr(r))
-
-    def _process(self, left, right):
-        il, ir = self._info['left'], self._info['right']
+    def _process(self, left, right, il, ir):
         if not any(il.k):
             self.get_logger().error('camera_info has no calibration (K = 0). Calibrate first.')
             self.done = True
@@ -196,14 +169,4 @@ class StereoCheck(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = StereoCheck()
-    try:
-        while rclpy.ok() and not node.done:
-            rclpy.spin_once(node, timeout_sec=0.5)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(StereoCheck, args, until=lambda n: n.done)

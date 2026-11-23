@@ -29,6 +29,7 @@ setup(
             'detector_node = truck_bringup.detector_node:main',
             'recorder_node = truck_bringup.recorder_node:main',
             'scan_guard = truck_bringup.scan_guard:main',
+            'truck_keys = truck_bringup.truck_keys:main',
         ],
     },
 )

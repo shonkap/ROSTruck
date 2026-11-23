@@ -11,19 +11,17 @@
 
 Progress = known map area in m^2.
 """
-import json
 import math
 import os
 
-import cv2
-import numpy as np
-import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
 from rclpy.node import Node
 from std_msgs.msg import Empty, String
 
-from truck_tasks.planning import FREE_MAX, approach_point, frontiers, mark_driven, reachable_free
-from truck_tasks.ros_common import MapCache, ModuleAnnouncer, PoseTracker
+from truck_common.maps import save_nav2_map
+from truck_common.ros import PoseTracker, jparse, run_node
+from truck_tasks.planning import approach_point, frontiers, mark_driven, reachable_free
+from truck_tasks.ros_common import MapCache, ModuleAnnouncer
 
 
 class Explorer(Node):
@@ -90,33 +88,15 @@ class Explorer(Node):
         area = self._known_area()
         msg = '{} - {:.1f} m^2 mapped'.format(why, area)
         if ok and self._save_as and self._map.msg is not None:
-            msg += ', saved ' + self._save_map(self._save_as)
+            msg += '; ' + save_nav2_map(self._map.msg, self._save_as)
         self.get_logger().info('map_room: ' + msg)
         self._task.feedback('succeeded' if ok else 'failed', msg, progress=round(area, 1))
-
-    def _save_map(self, path):
-        path = os.path.expanduser(path)
-        d = os.path.dirname(path)
-        if d and not os.path.isdir(d):
-            os.makedirs(d)
-        i = self._map.msg.info
-        g = np.asarray(self._map.msg.data, dtype=np.int16).reshape(i.height, i.width)
-        img = np.full(g.shape, 205, np.uint8)        # nav2 map_server convention
-        img[(g >= 0) & (g < FREE_MAX)] = 254
-        img[g >= 65] = 0
-        cv2.imwrite(path + '.png', np.flipud(img))
-        with open(path + '.yaml', 'w') as f:
-            f.write('image: {}.png\nmode: trinary\nresolution: {}\norigin: [{}, {}, 0.0]\n'
-                    'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n'.format(
-                        os.path.basename(path), i.resolution, i.origin.position.x, i.origin.position.y))
-        return path + '.png'
 
     def _on_nav(self, msg):
         if self._phase != 'frontier' or self._goal is None:
             return
-        try:
-            st = json.loads(msg.data)
-        except ValueError:
+        st = jparse(msg)
+        if not isinstance(st, dict):
             return
         if st.get('state') == 'succeeded':
             # Standing at a frontier doesn't always reveal what's behind it
@@ -214,15 +194,5 @@ class Explorer(Node):
                                                         len(cands)))
 
 
-
 def main(args=None):
-    rclpy.init(args=args)
-    node = Explorer()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(Explorer, args)

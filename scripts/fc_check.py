@@ -12,12 +12,13 @@ Exit code 0 = link healthy, 1 = something failed (see the FAIL lines).
 Python 3.6 compatible, so it also runs on the Jetson.
 """
 import argparse
-import os
 import sys
 import time
 from collections import Counter
 
 from pymavlink import mavutil
+
+from fc_link import default_conn, fetch_params, wait_autopilot, write_parm
 
 MAV = mavutil.mavlink
 
@@ -60,43 +61,6 @@ def info(text):
     print('        ' + text)
 
 
-def default_conn():
-    for path in ('/dev/fc0', '/dev/ttyACM0'):
-        if os.path.exists(path):
-            return path
-    return '/dev/ttyACM0'
-
-
-def wait_heartbeat(m, timeout):
-    end = time.time() + timeout
-    while time.time() < end:
-        hb = m.recv_match(type='HEARTBEAT', blocking=True, timeout=0.5)
-        if hb is not None and hb.autopilot != MAV.MAV_AUTOPILOT_INVALID \
-                and hb.get_srcComponent() == MAV.MAV_COMP_ID_AUTOPILOT1:
-            return hb
-    return None
-
-
-def fetch_all_params(m, timeout=30.0):
-    m.mav.param_request_list_send(m.target_system, m.target_component)
-    params, total = {}, None
-    end = last_rx = time.time()
-    end += timeout
-    while time.time() < end and time.time() - last_rx < 3.0:
-        msg = m.recv_match(type='PARAM_VALUE', blocking=True, timeout=0.5)
-        if msg is None:
-            continue
-        last_rx = time.time()
-        name = msg.param_id
-        if isinstance(name, bytes):
-            name = name.decode('ascii', 'ignore')
-        params[name.rstrip('\x00')] = msg.param_value
-        total = msg.param_count
-        if total and len(params) >= total:
-            break
-    return params, total
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -116,11 +80,10 @@ def main():
         return 1
 
     print('\n[1] Heartbeat')
-    hb = wait_heartbeat(m, 10.0)
+    hb = wait_autopilot(m, 10.0)
     if hb is None:
         fail('no autopilot heartbeat in 10 s (wrong port? another program holding it?)')
         return 1
-    m.target_system, m.target_component = hb.get_srcSystem(), hb.get_srcComponent()
     armed = bool(hb.base_mode & MAV.MAV_MODE_FLAG_SAFETY_ARMED)
     ok('system {} comp {}, type={} ({}), mode={} ({}), armed={}'.format(
         m.target_system, m.target_component, hb.type,
@@ -218,7 +181,8 @@ def main():
         fail('no PARAM_VALUE reply - commands are NOT reaching the FC')
     else:
         ok('param read round trip {:.0f} ms'.format((time.time() - t0) * 1000))
-    params, total = fetch_all_params(m)
+    raw, total = fetch_params(m, timeout=30.0)
+    params = {k: v[0] for k, v in raw.items()}
     (ok if total and len(params) >= total else fail)(
         'downloaded {}/{} params'.format(len(params), total))
     for name, expect, note in KEY_PARAMS:
@@ -253,9 +217,7 @@ def main():
         info('  (see README "Indoor driving (no GPS)"; GUIDED is refused indoors until then)')
 
     if args.save_params:
-        with open(args.save_params, 'w') as f:
-            for k in sorted(params):
-                f.write('{},{:g}\n'.format(k, params[k]))
+        write_parm(args.save_params, params)
         info('wrote {} params to {}'.format(len(params), args.save_params))
 
     print('\nRESULT: {}'.format('ALL GOOD' if not failures else

@@ -17,18 +17,17 @@ named places, e.g. from a camera object detector, so "go to the couch" works.
 
 Without credentials it falls back to a small keyword planner and says so.
 """
-import json
 import threading
 import time
 
-import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from truck_common.ros import LATCHED, PoseTracker, jmsg, jparse, run_node
 from truck_planner.llm import DEFAULT_MODEL, PlannerError, make_client, plan_with_claude
 from truck_planner.planner_core import build_context, rule_based_plan, summarize_map, validate_plan
 from truck_tasks.planning import approach_point, frontiers, mark_driven, reachable_free
-from truck_tasks.ros_common import LATCHED, MapCache, ModuleAnnouncer, PoseTracker, jmsg, jparse
+from truck_tasks.ros_common import MapCache, ModuleAnnouncer
 
 
 class PlannerNode(Node):
@@ -135,17 +134,8 @@ class PlannerNode(Node):
             if auto:
                 for t in tasks:
                     t = dict(t, source='llm')
-                    self._submit_pub.publish(String(data=json.dumps(t)))
+                    self._submit_pub.publish(jmsg(t))
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = PlannerNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(PlannerNode, args)

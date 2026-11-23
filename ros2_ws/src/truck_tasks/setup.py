@@ -26,6 +26,7 @@ setup(
             'explorer = truck_tasks.explorer:main',
             'places_node = truck_tasks.places_node:main',
             'watchdog = truck_tasks.watchdog:main',
+            'map_guard = truck_tasks.map_guard:main',
         ],
     },
 )

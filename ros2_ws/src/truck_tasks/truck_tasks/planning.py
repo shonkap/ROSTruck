@@ -10,7 +10,7 @@ import math
 
 import numpy as np
 
-UNKNOWN, FREE_MAX, OCCUPIED_MIN = -1, 25, 65
+from truck_common.maps import FREE_MAX, OCCUPIED_MIN, UNKNOWN  # noqa: F401 (re-exported)
 
 
 class GridMap(object):
@@ -124,8 +124,43 @@ def nearest_free(cost, cell, max_radius=20):
     return None
 
 
-def plan(gm, start_xy, goal_xy, robot_radius):
-    """World-frame path [(x, y)] from start to goal, or None."""
+def with_obstacles(gm, points):
+    """Copy of the map with extra occupied cells (world points), e.g. what the
+    lidar/cameras see right now but SLAM hasn't mapped."""
+    if points is None or len(points) == 0:
+        return gm
+    out = GridMap(gm.grid.copy().ravel(), gm.w, gm.h, gm.res, gm.x0, gm.y0)
+    rows = np.floor((points[:, 1] - gm.y0) / gm.res).astype(int)
+    cols = np.floor((points[:, 0] - gm.x0) / gm.res).astype(int)
+    ok = (rows >= 0) & (rows < gm.h) & (cols >= 0) & (cols < gm.w)
+    out.grid[rows[ok], cols[ok]] = 100
+    return out
+
+
+def path_blocked(path, points, clearance, start_xy=None, horizon=2.0):
+    """True if any obstacle point is within `clearance` of the path's next
+    `horizon` metres (measured from start_xy, else from the path's start)."""
+    if not path or points is None or len(points) == 0:
+        return False
+    p = np.asarray(path, dtype=np.float64)
+    ref = np.asarray(start_xy if start_xy is not None else p[0], dtype=np.float64)
+    p = p[np.hypot(p[:, 0] - ref[0], p[:, 1] - ref[1]) <= horizon]
+    if len(p) == 0:
+        return False
+    # densify to ~5 cm so gaps between simplified path points are checked too
+    dense = [p[0]]
+    for a, b in zip(p[:-1], p[1:]):
+        n = max(1, int(np.hypot(*(b - a)) / 0.05))
+        dense.extend(a + (b - a) * (i / float(n)) for i in range(1, n + 1))
+    d = np.asarray(dense)
+    gap = np.hypot(d[:, None, 0] - points[None, :, 0], d[:, None, 1] - points[None, :, 1])
+    return bool((gap < clearance).any())
+
+
+def plan(gm, start_xy, goal_xy, robot_radius, obstacles=None):
+    """World-frame path [(x, y)] from start to goal, or None. `obstacles`:
+    extra world points to avoid (live sensor data)."""
+    gm = with_obstacles(gm, obstacles)
     cost = cost_map(gm, robot_radius)
     # The robot's own cell is never lethal for itself (it is standing there).
     s = nearest_free(cost, gm.to_cell(*start_xy))
@@ -297,9 +332,9 @@ class ThreePointTurn(object):
     the map) reporting something close ahead. Starts in reverse when there's
     room behind - usually the reason we got here is something in front."""
 
-    def __init__(self, leg_s=3.0, speed=0.15, front_stop=0.5, rear_stop=0.15):
+    def __init__(self, leg_s=3.0, speed=0.15, front_stop=0.4, rear_stop=0.15):
         self.leg_s, self.speed, self.front_stop = leg_s, speed, front_stop
-        self.rear_stop = rear_stop      # m from the rear bumper (lidar)
+        self.rear_stop = rear_stop      # m, both from the bumpers (all guards)
         self.direction = None
         self.leg_start = 0.0
         self.boxed_in = False

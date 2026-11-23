@@ -67,8 +67,8 @@
   <span id="fc" class="pill">FC: ?</span>
   <span id="bat" class="pill">battery ?</span>
   <span id="active" class="pill">no task</span>
-  <span id="obst" class="pill" title="nearest obstacle in front (stereo camera guard / lidar from the bumper)">ahead: ?</span>
-  <span id="rear" class="pill" title="nearest obstacle behind the rear bumper (lidar)" style="display:none">behind: ?</span>
+  <span id="obst" class="pill">ahead: ?</span>
+  <span id="rear" class="pill">behind: ?</span>
   <span style="flex:1"></span>
   <button class="stop" id="stop" title="Cancel all tasks (the RC transmitter is still the real kill switch)">STOP</button>
 </header>
@@ -360,14 +360,14 @@
     $('fc').title = relaying ? 'GUIDED + armed: tasks can drive' : 'Tasks only move the truck when the FC is GUIDED and armed (switch on the transmitter)';
     const b = state.battery;
     $('bat').textContent = b && b.voltage ? `${b.voltage.toFixed(2)} V` + (b.percentage != null ? ` · ${Math.round(b.percentage * 100)}%` : '') : 'battery ?';
-    const o = state.obstacle, lf = state.lidar_front, rr = state.rear;
-    $('obst').textContent = (o == null && lf == null) ? 'ahead: clear'
-      : 'ahead: ' + [o != null ? `cam ${o.toFixed(2)} m` : null, lf != null ? `lidar ${lf.toFixed(2)} m` : null].filter(Boolean).join(' · ');
-    const worst = Math.min(o == null ? 99 : o - 0.25, lf == null ? 99 : lf);
-    $('obst').className = 'pill ' + (worst < 0.2 ? 'bad' : worst < 0.7 ? 'warn' : 'ok');
-    $('rear').style.display = (rr != null || lf != null) ? '' : 'none';
-    $('rear').textContent = rr == null ? 'behind: clear' : `behind: ${rr.toFixed(2)} m`;
-    $('rear').className = 'pill ' + (rr == null ? 'ok' : rr < 0.2 ? 'bad' : rr < 0.7 ? 'warn' : 'ok');
+    const pill = (id, label, d) => {
+      $(id).textContent = d == null ? `${label}: clear` : `${label}: ${d.toFixed(2)} m`;
+      $(id).className = 'pill ' + (d == null ? 'ok' : d < 0.2 ? 'bad' : d < 0.7 ? 'warn' : 'ok');
+    };
+    const guards = (state.guards || []).join(' + ') || 'no guard running';
+    pill('obst', 'ahead', state.ahead);
+    pill('rear', 'behind', state.behind);
+    $('obst').title = $('rear').title = `nearest obstacle from the bumper (${guards})`;
     const camOk = state.camera_age != null && state.camera_age < 3;
     $('cam').style.display = camOk ? 'block' : 'none';
     $('camnone').style.display = camOk ? 'none' : 'block';

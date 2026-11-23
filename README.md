@@ -47,22 +47,28 @@ docker/docker-compose.sim.yml down` (from the host) to shut the container.
 
 **Real truck** (FC on USB, from the host): `.venv/bin/python scripts/fc_check.py`.
 **Jetson**: `./scripts/jetson_setup.sh`, then
-`docker compose -f docker/docker-compose.jetson.yml up -d` - web page at
-`http://<jetson-ip>:8080`. Details below.
+`./scripts/truck.sh start` (and `./scripts/truck.sh autostart on` to start at
+every power-up) - web page at `http://<jetson-ip>:8080`. Details below.
 
 ## Repo layout
 
 ```
+ros2_ws/src/truck_common/   helpers every package uses: run_node, QoS, JSON, TF pose,
+                            guard topics + maths, map files, image conversion
 ros2_ws/src/fc_bridge/      MAVLink <-> ROS2 bridge (telemetry, cmd_vel -> FC)
-ros2_ws/src/truck_bringup/  truck + sim shared: stereo camera driver, SLAM launch,
-                            calibration check, map saver, truck.launch.py
+ros2_ws/src/truck_bringup/  truck + sim shared: stereo camera driver, guards, detector,
+                            SLAM launch, rig_launch (TF tree), truck.launch.py
 ros2_ws/src/truck_sim/      sim only: launch, stereo relay, sim_ctl, explore_room, turn_test
-ros2_ws/src/truck_tasks/    task bus: task manager, navigator ("goto"), explorer ("map_room")
+ros2_ws/src/truck_tasks/    task bus: task manager, navigator ("goto"), explorer ("map_room"),
+                            map guard
 ros2_ws/src/truck_web/      web page plugin (map, waypoints, tasks, planner requests)
+ros2_ws/src/truck_planner/  LLM planner plugin (PC only)
 sim/gazebo/                 truck model + room generators (make_*.py), worlds
 sim/params/                 SITL params + snapshot of the real FC's params
 sim/fake_fc.py              tiny fake FC (no physics) for quick bridge tests
 scripts/fc_check.py         MAVLink link health check (real FC or SITL)
+scripts/fc_set_params.py    change FC params with an automatic backup (shares fc_link.py)
+scripts/sim_*_test.py       end-to-end sim tests (share simtest.py)
 scripts/stereo_calibrate.py guided stereo camera calibration
 scripts/jetson_setup.sh     one-shot Jetson installer
 docker/                     dev, sim (x86) and Jetson (arm64) images + compose files
@@ -94,7 +100,8 @@ ros2 launch truck_sim sim.launch.py             # Gazebo + SITL + fc_bridge + SL
 ```
 
 Open **http://localhost:6080/vnc.html** for the Gazebo and RViz windows.
-Then, in a second shell (`docker compose ... exec sim bash`):
+Then, in a second shell (`docker compose -f docker/docker-compose.sim.yml exec sim bash`,
+or equivalently `docker exec -it docker-sim-1 bash` - `docker ps` shows the name):
 
 ```bash
 ros2 run truck_sim sim_ctl guided arm           # what the pilot's mode switch does on the truck
@@ -111,7 +118,7 @@ ros2 run truck_bringup map_saver --ros-args -p output:=/workspace/maps/room
 | `gui:=false rviz:=false` | true | headless, faster |
 | `slam:=false` | true | no RTAB-Map |
 | `tasks:=false` | true | no task manager / navigator / explorer / planner / web page |
-| `guard:=false` | true | no stereo collision guard |
+| `guard:=false` | true | no stereo / lidar collision guards (the map guard is a tasks.launch.py arg) |
 | `detector:=false` | true | no object detector (demo: finds the red bin) |
 | `detector_rules:='[...]'` | `[]` | detection → task rules, e.g. `[{"label": "red_bin", "max_distance": 1.2, "task": {"type": "stop", "priority": 10}}]` |
 | `map_name:=... localization:=true` | sim_room | saved map folder / relocalize in it (see *Saved maps*) |
@@ -177,9 +184,20 @@ keep the desktop until the cameras are calibrated).
 Then:
 
 ```bash
-docker compose -f docker/docker-compose.jetson.yml up -d     # fc_bridge + cameras + TF
-docker compose -f docker/docker-compose.jetson.yml logs -f
+./scripts/truck.sh start          # fc_bridge + cameras + lidar + guards + web page
+./scripts/truck.sh logs           # follow the output (Ctrl-C leaves it running)
+./scripts/truck.sh shell          # shell in the container: ros2 topic list, ...
+./scripts/truck.sh autostart on   # start by itself whenever the battery is plugged in
 ```
+
+What runs is set in `docker/truck.env` (`TRUCK_LAUNCH_ARGS=lidar:=true
+slam:=true map_name:=house localization:=true ...`); `./scripts/truck.sh
+restart` after editing. With autostart on, the software is up ~30-60 s after
+power-up, no login or network needed, and a crashed launch is restarted.
+Starting is safe on the bench: nothing moves until the pilot switches the FC
+to GUIDED and arms. Cutting the battery is a hard power-off - fine for the
+software, but stop SLAM first (`./scripts/truck.sh stop`) if you are in the
+middle of mapping, or the last minutes of the map can be lost.
 
 ## 5. Stereo cameras
 
@@ -297,15 +315,40 @@ builds Slamtec's `rplidar_ros`). Check the scan direction in RViz - an object
 in front of the truck must show up at +x; if it's backwards set `lidar_yaw:
 3.14159` in `truck_bringup/config/rig.yaml`.
 
-## Safety: collision guard
+## Safety: collision guards
 
-`collision_guard` (truck_bringup) computes stereo depth in the corridor in
-front of the truck and publishes `safety/speed_limit`; `fc_bridge` caps the
-forward speed of **every** `cmd_vel` with it (0 inside 0.4 m, ramp to full at
-1.2 m; reversing stays allowed so recoveries work; a stale limit is ignored
-with a warning). Also `safety/obstacle_distance`, shown on the web page. On
-the truck it needs rectified images (`slam:=true`). The RC transmitter
-remains the real kill switch.
+Three guards cap the speed of **every** `cmd_vel` in `fc_bridge`, whoever sent
+it (web, explorer, planner, `truck_keys`). The strictest fresh cap wins. A
+guard only blocks the direction it covers, so the truck can still back away
+or do a three-point turn. A stale guard is ignored with a warning. The RC
+transmitter is still the real kill switch.
+
+| guard | sees | covers | stop / full speed | topics |
+|---|---|---|---|---|
+| `collision_guard` (stereo) | anything from **5 cm (2 in) up to the truck's height** in its lane, up to 1.5 m ahead | front | 0.30 m / 1.1 m | `safety/stereo/*` |
+| `scan_guard` (lidar) | the 260 mm scan plane, 360° | front + rear | 0.2 m / 0.7 m | `safety/lidar/*` |
+| `map_guard` (SLAM map) | everything the map remembers (walls from the lidar, low obstacles from stereo) | front + rear | 0.12 m / 0.5 m | `safety/map/*` |
+
+Distances are from the bumpers. Every guard publishes the same four topics
+under its prefix (`forward_limit`, `reverse_limit` in m/s; `front_distance`,
+`rear_distance` in m; 99 = clear), defined once in
+`truck_common/guards.py`. The navigator and the web page's *ahead* / *behind*
+use the nearest fresh distance from all of them.
+
+- The stereo guard selects obstacles by **height above the floor**, not by
+  an image window: each depth pixel becomes a 3D point using the camera
+  height and pitch. The floor drops out, and a shoe or cable close in front
+  still counts. Anything above the truck's own height (`truck_height` in
+  rig.yaml, + 5 cm) is ignored, so it drives under tables; RTAB-Map's
+  `Grid/MaxObstacleHeight` matches. Tune `min_height` (default 0.05 m) and `min_points` (noise
+  rejection) on the node.
+- The map guard is what protects the **rear** from things lower than the
+  lidar plane: the cameras only look forward, but anything they mapped on the
+  way in stays in the map. It depends on localization, so it stops closer
+  than the others. If SLAM is lost it publishes "no limit" and the live
+  guards keep working. It runs with the task system (`tasks.launch.py
+  map_guard:=false` turns it off).
+- Below 5 cm, nothing stops the truck (e.g. a flat cable or a rug edge).
 - First cmd_vel test: wheels off the ground. Positive `angular.z` must turn
   left with the rear wheels counter-steering.
 
@@ -337,13 +380,26 @@ the sim and truck launches):
   the truck's radius, car-like pure pursuit (no turning on the spot; turn
   rate capped by the minimum turn radius, per side, updated from the
   steering self-check). Also serves `nav/goal` for other modules.
+  - **Goes around things that aren't in the map yet** (a cat, a person, a
+    box): the lidar and stereo guards publish what they see right now
+    (`safety/<source>/points`); the navigator remembers the last 3 s of it and
+    adds it to the map it plans on. The path is replanned every 2 s, and at
+    once (≤ 2 Hz) when something appears on the next 2 m of it. Specks only a
+    few mm in size are ignored as sensor noise. If there's no way around, the
+    guards hold the truck and it waits / backs up like any blocked path.
+  - **Several waypoints are driven through, not stopped at**: it switches to
+    the next one a lookahead (0.45 m) early and only slows down for the last.
+  - A waypoint it can't line up with (beside the truck, inside its turning
+    circle) is given up after 3 three-point turns that don't get it closer -
+    the explorer then picks another frontier instead of circling.
 - **explorer** (`map_room`) - warm-up lap, then frontier exploration
   (drive to the edge of the known map) until nothing is left or
   `max_minutes`; saves the map. Only frontiers reachable through known free
   space count (stereo noise makes fake free patches beyond walls), and goals
   keep a 0.45 m standoff from obstacles (stereo can't see closer than ~0.25 m).
 - Speed adapts to the path: up to `max_speed` (0.5 m/s) on straight
-  stretches, `speed` (0.3 m/s) in curves, slowing for the last 0.6 m.
+  stretches, `speed` (0.3 m/s) in curves, slowing for the last 0.6 m before
+  the final waypoint.
 - It's a car, it can't pivot: when the path leads behind the truck (> 100°)
   the navigator does a **three-point turn** - alternating reverse and forward
   legs on full lock (both rotate the truck the same way), switching early when

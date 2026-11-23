@@ -35,6 +35,7 @@ from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from sensor_msgs.srv import SetCameraInfo
 
 from truck_bringup import camera_info_yaml
+from truck_common.ros import run_node
 
 
 def csi_pipeline(sensor_id, width, height, fps, flip=0):
@@ -301,16 +302,7 @@ class StereoCameraNode(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = StereoCameraNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(StereoCameraNode, args)
 
 
 if __name__ == '__main__':

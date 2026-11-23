@@ -12,12 +12,12 @@ of space!). Prints the ratio and a suggested ATC_STR_RAT_FF.
 A rate of 0.0 drives straight (no result line). Rates the truck can't reach
 (e.g. 1.5) show where the steering runs out on each side.
 """
-import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu
 from std_msgs.msg import String
+from truck_common.ros import run_node
 
 
 class TurnTest(Node):
@@ -99,14 +99,4 @@ class TurnTest(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = TurnTest()
-    try:
-        while rclpy.ok() and not node.done:
-            rclpy.spin_once(node, timeout_sec=0.1)
-    except KeyboardInterrupt:
-        node._pub.publish(Twist())
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(TurnTest, args, until=lambda n: n.done, on_interrupt=lambda n: n._pub.publish(Twist()))

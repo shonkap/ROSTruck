@@ -31,29 +31,18 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import cv2
-import numpy as np
-import rclpy
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import BatteryState, Image
-from std_msgs.msg import Float32, String
+from std_msgs.msg import String
 
-LATCHED = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
-                     reliability=ReliabilityPolicy.RELIABLE)
-
-
-def map_to_png(data, width, height):
-    g = np.asarray(data, dtype=np.int16).reshape(height, width)
-    img = np.full((height, width, 3), (60, 56, 52), np.uint8)     # unknown (BGR)
-    img[(g >= 0) & (g < 25)] = (240, 240, 236)                    # free
-    img[(g >= 25) & (g < 65)] = (170, 170, 170)                   # uncertain
-    img[g >= 65] = (40, 40, 40)                                   # occupied
-    ok, buf = cv2.imencode('.png', np.flipud(img))
-    return buf.tobytes() if ok else b''
+from truck_common.guards import Obstacles
+from truck_common.images import image_to_bgr
+from truck_common.maps import preview_png, save_nav2_map
+from truck_common.ros import LATCHED, PoseTracker, jmsg, jparse, run_node
 
 
 class WebState(object):
@@ -74,9 +63,6 @@ class WebState(object):
         self.nav = {}
         self.camera_jpg = b''
         self.camera_time = 0.0
-        self.obstacle = None
-        self.rear = None
-        self.lidar_front = None
         self.places = []
         self.record = {}
 
@@ -116,13 +102,9 @@ class WebNode(Node):
         self.create_subscription(BatteryState, 'fc/battery', self._on_battery, 10)
         self.create_subscription(Image, self.get_parameter('camera_topic').value, self._on_camera,
                                  qos_profile_sensor_data)
-        self.create_subscription(Float32, 'safety/obstacle_distance', self._on_obstacle, 10)
-        self.create_subscription(Float32, 'safety/rear_distance', self._on_rear, 10)
-        self.create_subscription(Float32, 'safety/lidar/front_distance', self._on_lidar_front, 10)
+        self.obstacles = Obstacles(self)
         self._cam_last = 0.0
-        import tf2_ros
-        self._tf = tf2_ros.Buffer()
-        self._tfl = tf2_ros.TransformListener(self._tf, self)
+        self._pose = PoseTracker(self, max_age=None)
         self.create_timer(0.2, self._update_pose)
         self.static_dir = os.path.join(get_package_share_directory('truck_web'), 'static')
 
@@ -132,7 +114,7 @@ class WebNode(Node):
         i = msg.info
         if i.width == 0:
             return
-        png = map_to_png(msg.data, i.width, i.height)
+        png = preview_png(msg)
         with self.state.lock:
             self.state.map_png = png
             self.state.map_version += 1
@@ -142,43 +124,23 @@ class WebNode(Node):
 
     def save_map(self):
         """Write the latest /map as map.png/.yaml into map_dir. Returns (ok, message)."""
-        d = os.path.expanduser(self.get_parameter('map_dir').value or '~/maps/current')
-        msg = self._last_map
-        if msg is None:
+        if self._last_map is None:
             return False, 'no map received yet'
-        i = msg.info
-        g = np.asarray(msg.data, dtype=np.int16).reshape(i.height, i.width)
-        img = np.full(g.shape, 205, np.uint8)                       # nav2 trinary map
-        img[(g >= 0) & (g < 25)] = 254
-        img[g >= 65] = 0
-        if not os.path.isdir(d):
-            os.makedirs(d)
-        cv2.imwrite(os.path.join(d, 'map.png'), np.flipud(img))
-        with open(os.path.join(d, 'map.yaml'), 'w') as f:
-            f.write('image: map.png\nmode: trinary\nresolution: {}\norigin: [{}, {}, 0.0]\n'
-                    'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n'.format(
-                        i.resolution, i.origin.position.x, i.origin.position.y))
-        known = float((g >= 0).sum()) * i.resolution ** 2
-        return True, 'saved {}/map.png ({:.1f} m^2 known)'.format(d, known)
+        d = self.get_parameter('map_dir').value or '~/maps/current'
+        return True, save_nav2_map(self._last_map, os.path.join(d, 'map'))
 
     def _on_path(self, msg):
         with self.state.lock:
             self.state.path = [[p.pose.position.x, p.pose.position.y] for p in msg.poses]
 
-    def _json(self, msg):
-        try:
-            return json.loads(msg.data)
-        except ValueError:
-            return None
-
     def _on_tasks(self, msg):
-        d = self._json(msg)
+        d = jparse(msg)
         if d is not None:
             with self.state.lock:
                 self.state.tasks = d
 
     def _on_report(self, msg):
-        d = self._json(msg) or {'text': msg.data}
+        d = jparse(msg) or {'text': msg.data}
         d['received'] = time.strftime('%H:%M:%S')
         with self.state.lock:
             self.state.reports.insert(0, d)
@@ -189,13 +151,13 @@ class WebNode(Node):
             self.state.fc_status = msg.data
 
     def _on_steering(self, msg):
-        d = self._json(msg)
+        d = jparse(msg)
         if d is not None:
             with self.state.lock:
                 self.state.steering = d
 
     def _on_nav(self, msg):
-        d = self._json(msg)
+        d = jparse(msg)
         if d is not None:
             with self.state.lock:
                 self.state.nav = d
@@ -211,15 +173,7 @@ class WebNode(Node):
             return
         self._cam_last = now
         try:
-            buf = np.frombuffer(msg.data, np.uint8)
-            if msg.encoding in ('rgb8', 'bgr8'):
-                img = buf.reshape(msg.height, msg.step // 3, 3)[:, :msg.width]
-                if msg.encoding == 'rgb8':
-                    img = img[:, :, ::-1]
-            elif msg.encoding in ('mono8', '8UC1'):
-                img = buf.reshape(msg.height, msg.step)[:, :msg.width]
-            else:
-                return
+            img = image_to_bgr(msg)
             w = self.get_parameter('camera_width').value
             if img.shape[1] > w:
                 img = cv2.resize(img, (w, int(img.shape[0] * w / img.shape[1])), interpolation=cv2.INTER_AREA)
@@ -261,40 +215,22 @@ class WebNode(Node):
                     self._teleop = None
 
     def _on_record(self, msg):
-        d = self._json(msg)
+        d = jparse(msg)
         if isinstance(d, dict):
             with self.state.lock:
                 self.state.record = d
 
     def _on_places(self, msg):
-        d = self._json(msg)
+        d = jparse(msg)
         if isinstance(d, list):
             with self.state.lock:
                 self.state.places = d
 
-    def _on_rear(self, msg):
-        with self.state.lock:
-            self.state.rear = None if msg.data >= 50.0 else round(float(msg.data), 2)
-
-    def _on_lidar_front(self, msg):
-        with self.state.lock:
-            self.state.lidar_front = None if msg.data >= 50.0 else round(float(msg.data), 2)
-
-    def _on_obstacle(self, msg):
-        with self.state.lock:
-            self.state.obstacle = None if msg.data >= 50.0 else round(float(msg.data), 2)
-
     def _update_pose(self):
-        import math
-        from rclpy.time import Time
-        try:
-            t = self._tf.lookup_transform('map', 'base_link', Time())
-        except Exception:
-            return
-        q = t.transform.rotation
-        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
-        with self.state.lock:
-            self.state.pose = [t.transform.translation.x, t.transform.translation.y, yaw]
+        pose = self._pose.pose()
+        if pose is not None:
+            with self.state.lock:
+                self.state.pose = list(pose)
 
     # ---------------------------------------------------------- HTTP side
     def snapshot(self):
@@ -302,15 +238,16 @@ class WebNode(Node):
         with s.lock:
             return {'pose': s.pose, 'path': s.path, 'fc_status': s.fc_status, 'battery': s.battery,
                     'tasks': s.tasks, 'reports': s.reports, 'steering': s.steering, 'nav': s.nav,
-                    'map': s.map_info, 'time': time.time(), 'obstacle': s.obstacle,
-                    'places': s.places, 'record': s.record, 'rear': s.rear,
-                    'lidar_front': s.lidar_front,
+                    'map': s.map_info, 'time': time.time(),
+                    'ahead': self.obstacles.front(), 'behind': self.obstacles.rear(),
+                    'guards': self.obstacles.seen(),
+                    'places': s.places, 'record': s.record,
                     'camera_age': (time.time() - s.camera_time) if s.camera_time else None}
 
     def submit(self, task):
         task = dict(task)
         task.setdefault('source', 'web')
-        self._submit.publish(String(data=json.dumps(task)))
+        self._submit.publish(jmsg(task))
 
     def cancel(self, task_id):
         self._cancel.publish(String(data=str(task_id)))
@@ -377,7 +314,7 @@ def make_handler(node):
             if path == '/api/record':
                 if body.get('action') not in ('start', 'stop'):
                     return self._send(400, '{"error": "action must be start or stop"}')
-                node._rec_pub.publish(String(data=json.dumps(body)))
+                node._rec_pub.publish(jmsg(body))
                 return self._send(200, '{"ok": true}')
             if path == '/api/teleop':
                 try:
@@ -390,7 +327,7 @@ def make_handler(node):
             if path == '/api/place':
                 if not isinstance(body, dict) or not str(body.get('name', '')).strip():
                     return self._send(400, '{"error": "place needs a name"}')
-                node._place_pub.publish(String(data=json.dumps(body)))
+                node._place_pub.publish(jmsg(body))
                 return self._send(200, '{"ok": true}')
             if path == '/api/cancel':
                 node.cancel(body.get('id', 'all'))
@@ -405,19 +342,16 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):   # py3.6 ha
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = WebNode()
-    port, bind = node.get_parameter('port').value, node.get_parameter('bind').value
-    server = ThreadingHTTPServer((bind, port), make_handler(node))
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    node.get_logger().info('truck web page on http://{}:{}/{}'.format(
-        bind, port, '?token=...' if node.token else ''))
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.shutdown()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    servers = []
+
+    def make():
+        node = WebNode()
+        port, bind = node.get_parameter('port').value, node.get_parameter('bind').value
+        server = ThreadingHTTPServer((bind, port), make_handler(node))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        node.get_logger().info('truck web page on http://{}:{}/{}'.format(
+            bind, port, '?token=...' if node.token else ''))
+        return node
+
+    return run_node(make, args, on_exit=lambda n: [srv.shutdown() for srv in servers])

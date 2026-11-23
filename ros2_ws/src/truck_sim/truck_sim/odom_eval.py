@@ -11,10 +11,11 @@ odom:=stereo vs odom:=lidar on the same drive (explore_room).
 import math
 
 import numpy as np
-import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+
+from truck_common.ros import run_node
 
 
 def align_2d(src, dst):
@@ -68,23 +69,17 @@ class OdomEval(Node):
         return self.t0 is not None and now - self.t0 > self.get_parameter('seconds').value
 
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = OdomEval()
-    try:
-        while rclpy.ok() and not node.done():
-            rclpy.spin_once(node, timeout_sec=0.1)
-    except KeyboardInterrupt:
-        pass
+def report(node):
     pairs = node.pairs
     if len(pairs) < 20:
         print('ODOM_EVAL not enough data ({} samples, lost {})'.format(len(pairs), node.lost))
-    else:
-        o, g = [p[0] for p in pairs], [p[1] for p in pairs]
-        length = sum(math.hypot(g[i][0] - g[i - 1][0], g[i][1] - g[i - 1][1]) for i in range(1, len(g)))
-        rms, mx, final = ate(o, g)
-        print('ODOM_EVAL path {:.1f} m, ATE rms {:.3f} m, max {:.3f} m, final {:.3f} m, '
-              'lost {} msgs, {} samples'.format(length, rms, mx, final, node.lost, len(pairs)))
-    node.destroy_node()
-    if rclpy.ok():
-        rclpy.shutdown()
+        return
+    o, g = [p[0] for p in pairs], [p[1] for p in pairs]
+    length = sum(math.hypot(g[i][0] - g[i - 1][0], g[i][1] - g[i - 1][1]) for i in range(1, len(g)))
+    rms, mx, final = ate(o, g)
+    print('ODOM_EVAL path {:.1f} m, ATE rms {:.3f} m, max {:.3f} m, final {:.3f} m, '
+          'lost {} msgs, {} samples'.format(length, rms, mx, final, node.lost, len(pairs)))
+
+
+def main(args=None):
+    return run_node(OdomEval, args, until=lambda n: n.done(), on_exit=report)

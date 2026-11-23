@@ -12,6 +12,7 @@
   <maintainer email="dev@example.com">dev</maintainer>
   <license>MIT</license>
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>truck_common</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>truck_tasks</exec_depend>
   <exec_depend>python3-numpy</exec_depend>

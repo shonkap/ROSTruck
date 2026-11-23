@@ -13,19 +13,19 @@ steering, can't turn on the spot), so the turn rate is always capped at
 speed / min_turn_radius; the radius is raised automatically if fc_bridge's
 steering monitor learns that the truck can't turn as tight as configured.
 """
-import json
 import math
 
-import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Path
 from rclpy.node import Node
-from std_msgs.msg import Empty, Float32, String
+from std_msgs.msg import Empty, String
 
-from truck_tasks.planning import (ThreePointTurn, heading_error, plan, pure_pursuit,
+from truck_tasks.planning import (ThreePointTurn, heading_error, path_blocked, plan, pure_pursuit,
                                   speed_for_curvature)
+from truck_common.guards import LiveObstacles, Obstacles
+from truck_common.ros import LATCHED, PoseTracker, jmsg, jparse, run_node
 from truck_tasks.places_node import normalize, resolve_waypoints
-from truck_tasks.ros_common import LATCHED, MapCache, ModuleAnnouncer, PoseTracker, jmsg, jparse
+from truck_tasks.ros_common import MapCache, ModuleAnnouncer
 
 
 class Navigator(Node):
@@ -42,9 +42,13 @@ class Navigator(Node):
         p('stuck_timeout', 12.0)        # s without getting closer -> back up + replan, then fail
         p('backup_distance', 0.5)       # m to reverse when stuck (car-like: can't pivot out)
         p('backup_speed', 0.2)          # m/s
+        p('max_turns', 3)               # three-point turns per waypoint without getting closer
         p('lost_timeout', 30.0)         # s without a pose (VO lost) before the task fails
         p('turnaround_start', 1.75)     # rad (100 deg): path behind us -> 3-point turn
-        p('turnaround_done', 1.0)       # rad (57 deg): back to normal path following
+        # rad (23 deg): back to normal path following. Must be small: with turn radius R a
+        # point at angle a is only reachable beyond 2 R sin(a) - at 57 deg that's ~0.7 m,
+        # so close targets ended up beside the truck again and the turn repeated forever.
+        p('turnaround_done', 0.4)
         p('turnaround_max_s', 25.0)     # give up turning after this long (stuck logic takes over)
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self._speed = g('speed')
@@ -64,12 +68,10 @@ class Navigator(Node):
         self.create_subscription(Empty, 'nav/cancel', lambda m: self._stop('canceled'), 10)
         self.create_subscription(String, 'fc/status', self._on_fc_status, 10)
         self.create_subscription(String, 'fc/steering_report', self._on_steering, 10)
-        # nearest obstacle ahead from the collision guard (>= 50 = nothing seen)
-        self._front = None
-        self.create_subscription(Float32, 'safety/obstacle_distance', self._on_front, 10)
-        # behind the rear bumper, from the lidar guard (>= 50 = nothing / no lidar)
-        self._rear = None
-        self.create_subscription(Float32, 'safety/rear_distance', self._on_rear, 10)
+        # nearest obstacle ahead of / behind the bumpers over all collision guards
+        self._obstacles = Obstacles(self)
+        # what the lidar/cameras see right now (a cat, a person), for planning around it
+        self._live = LiveObstacles(self, self._pose.pose)
         self._task = ModuleAnnouncer(self, 'navigator', ['goto'], self._on_task,
                                      lambda: self._stop('aborted'))
 
@@ -85,6 +87,7 @@ class Navigator(Node):
         self._fc_ok = False
         self._fc_status = ''
         self._backup_until = 0.0
+        self._backup_turn = 0.0
         self._lost_since = None
         self._last_lost_backup = -math.inf
         self._turning_since = None
@@ -94,20 +97,13 @@ class Navigator(Node):
     def _now(self):
         return self.get_clock().now().nanoseconds * 1e-9
 
-    def _on_rear(self, msg):
-        self._rear = None if msg.data >= 50.0 else float(msg.data)
-
-    def _on_front(self, msg):
-        self._front = None if msg.data >= 50.0 else float(msg.data)
-
     def _on_fc_status(self, msg):
         self._fc_status = msg.data
         self._fc_ok = 'relaying_cmd_vel=True' in msg.data
 
     def _on_steering(self, msg):
-        try:
-            rep = json.loads(msg.data)
-        except ValueError:
+        rep = jparse(msg)
+        if not isinstance(rep, dict):
             return
         for side in ('left', 'right'):
             r = (rep.get(side) or {}).get('min_radius')
@@ -146,6 +142,7 @@ class Navigator(Node):
         self._best_dist = math.inf
         self._best_time = self._now()
         self._replans_stuck = 0
+        self._turns = 0             # three-point turns since we last got closer
         self._state('driving', 'to ({:.2f}, {:.2f})'.format(*self._goals[0]))
 
     # --------------------------------------------------------------- loop
@@ -192,7 +189,10 @@ class Navigator(Node):
         self._lost_since = None
         gx, gy = self._goals[0]
         dist = math.hypot(gx - pose[0], gy - pose[1])
-        if dist < self._tol:
+        last = len(self._goals) == 1
+        # intermediate waypoints: switch to the next one a lookahead early, so
+        # the truck drives through them instead of cornering on the spot
+        if dist < (self._tol if last else max(self._tol, self._lookahead)):
             self._goals.pop(0)
             if not self._goals:
                 self._stop('arrived', ok=True)
@@ -204,26 +204,53 @@ class Navigator(Node):
         now = self._now()
         if dist < self._best_dist - 0.05:
             self._best_dist, self._best_time = dist, now
+            self._turns = 0
         elif now - self._best_time > self._stuck_timeout:
             self._replans_stuck += 1
             if self._replans_stuck > 2:
                 self._stop('stuck: no progress for {:.0f} s'.format(3 * self._stuck_timeout))
                 return
-            # Probably nosed into something: reverse straight back, then replan.
+            # Probably nosed into something (a wall the turning circle can't clear):
+            # back out on full lock so the nose swings towards where the path goes,
+            # like a driver would - straight back just leads into the same wall.
             bs = self.get_parameter('backup_speed').value
             self._backup_until = now + self.get_parameter('backup_distance').value / bs
-            self.get_logger().warn('no progress: backing up, then replanning')
+            toward = self._path[min(len(self._path) - 1, 3)] if self._path else (gx, gy)
+            self._backup_turn = math.copysign(bs / max(self._min_r.values()),
+                                              heading_error(pose, toward))
+            self.get_logger().warn('no progress: backing out turning {}, then replanning'.format(
+                'left' if self._backup_turn > 0 else 'right'))
             self._best_time, self._last_plan = now, -math.inf
             self._path = None
         if now < self._backup_until:
-            cmd = Twist()
-            cmd.linear.x = -self.get_parameter('backup_speed').value
-            self._cmd.publish(cmd)
-            self._best_time = now
-            return
+            rear = self._obstacles.rear()
+            if rear is not None and rear < 0.15:      # backed up as far as it goes
+                self._backup_until = now
+            else:
+                cmd = Twist()
+                # yaw-rate semantics hold in reverse (+ = CCW), so the same sign turns the nose that way
+                cmd.linear.x, cmd.angular.z = -self.get_parameter('backup_speed').value, self._backup_turn
+                self._cmd.publish(cmd)
+                self._best_time = now
+                return
 
-        if self._path is None or now - self._last_plan > self._replan:
-            path = plan(gm, pose[:2], (gx, gy), self._radius)
+        live = self._live.points()
+        due = self._path is None or now - self._last_plan > self._replan
+        # something stepped onto the path: replan now (at most twice a second)
+        # (clearance a bit under the planner's own, or every fresh path that hugs an
+        # obstacle at exactly robot_radius would count as blocked again)
+        if not due and now - self._last_plan > 0.5 and \
+                path_blocked(self._path, live, 0.75 * self._radius, start_xy=pose[:2]):
+            due = True
+            self.get_logger().info('obstacle on the path: replanning around it',
+                                   throttle_duration_sec=3.0)
+        if due:
+            path = plan(gm, pose[:2], (gx, gy), self._radius, live)
+            if path is None and self._path is None and len(live):
+                # nothing to follow (e.g. just backed out) and blocked only by what the
+                # sensors see right now, which may move away: plan on the map alone and
+                # let the guards hold the truck meanwhile. With a current path, keep it.
+                path = plan(gm, pose[:2], (gx, gy), self._radius)
             self._last_plan = now
             if path is None:
                 if self._path is None:
@@ -240,6 +267,13 @@ class Navigator(Node):
         err = heading_error(pose, self._path[idx])
         g = self.get_parameter
         if self._turning_since is None and abs(err) > g('turnaround_start').value and dist > self._tol:
+            self._turns += 1
+            if self._turns > g('max_turns').value:
+                # e.g. a point beside the truck, inside its turning circle: every turn
+                # ends with it still off to the side. Give up so the caller picks another.
+                self._stop('cannot line up with ({:.2f}, {:.2f}): {} three-point turns without '
+                           'getting closer'.format(gx, gy, self._turns - 1))
+                return
             self._turning_since = now
             self._turn = ThreePointTurn()
             self.get_logger().info('target behind ({:.0f} deg): three-point turn'.format(math.degrees(err)))
@@ -247,7 +281,8 @@ class Navigator(Node):
             if abs(err) < g('turnaround_done').value or now - self._turning_since > g('turnaround_max_s').value:
                 self._turning_since = None
             else:
-                tv, tw = self._turn.step(now, pose, self._path[idx], gm, min_r, self._front, self._rear)
+                tv, tw = self._turn.step(now, pose, self._path[idx], gm, min_r, self._obstacles.front(),
+                                         self._obstacles.rear())
                 cmd = Twist()
                 cmd.linear.x, cmd.angular.z = tv, tw
                 self._cmd.publish(cmd)
@@ -262,7 +297,8 @@ class Navigator(Node):
         side = 'left' if k > 0 else 'right'
         k = max(-1.0 / self._min_r[side], min(1.0 / self._min_r[side], k))   # per-side limit
         v = speed_for_curvature(k, self._speed, max(self._speed, g('max_speed').value))
-        v *= max(0.4, min(1.0, dist / 0.6))            # slow down for the last bit
+        if last:
+            v *= max(0.4, min(1.0, dist / 0.6))        # slow down for the final stop
         cmd = Twist()
         cmd.linear.x, cmd.angular.z = v, k * v
         self._cmd.publish(cmd)
@@ -305,13 +341,4 @@ class Navigator(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = Navigator()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(Navigator, args)

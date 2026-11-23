@@ -12,10 +12,10 @@ Out:  stereo/{left,right}/image_raw, stereo/{left,right}/camera_info
 Same topic names as the real truck's stereo_camera_node, so everything
 downstream (SLAM launch, calibration checks) is shared between sim and truck.
 """
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
+from truck_common.ros import run_node
 
 
 class StereoRelay(Node):
@@ -88,13 +88,4 @@ class StereoRelay(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = StereoRelay()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(StereoRelay, args)

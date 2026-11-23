@@ -24,19 +24,15 @@ and add it to make_detector() below. Python 3.6 compatible.
 import json
 import time
 
-import cv2
-import numpy as np
-import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
-from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
-from truck_bringup.camera_info_yaml import baseline_m
 from truck_bringup.detection import (ColorBlobDetector, LandmarkMap, OnnxDetector, bbox_point,
                                      ground_point, quat_rotate, rule_matches)
-from truck_bringup.stereo_check import image_to_bgr
+from truck_bringup.stereo_pair import Disparity, StereoPair, intrinsics
+from truck_common.images import gray, image_to_bgr
+from truck_common.ros import Tf, jmsg, run_node
 
 
 def make_detector(node):
@@ -74,72 +70,38 @@ class DetectorNode(Node):
         self._rules = json.loads(g('rules') or '[]')
         self._rule_fired = {}
         self._landmarks = LandmarkMap(min_sightings=g('min_sightings'), max_spread=g('max_spread'))
-        self._info = {'left': None, 'right': None}
-        self._img = {'left': None, 'right': None}
-        self._last = 0.0
-        self._matcher = cv2.StereoBM_create(numDisparities=64, blockSize=11)
-        import tf2_ros
-        self._tf = tf2_ros.Buffer()
-        self._tfl = tf2_ros.TransformListener(self._tf, self)
+        self._disparity = Disparity()
+        self._tf = Tf(self)
         self._det_pub = self.create_publisher(String, 'detections', 10)
         # not 'landmarks': RTAB-Map already publishes a PoseArray there
         self._lm_pub = self.create_publisher(String, 'object_landmarks', 10)
         self._cand_pub = self.create_publisher(String, 'object_landmarks/candidates', 10)
         self._task_pub = self.create_publisher(String, 'tasks/submit', 10)
-        for side in ('left', 'right'):
-            topic = g(side + '_topic')
-            self.create_subscription(CameraInfo, topic.rsplit('/', 1)[0] + '/camera_info',
-                                     lambda m, s=side: self._info.__setitem__(s, m), qos_profile_sensor_data)
-            self.create_subscription(Image, topic, lambda m, s=side: self._on_img(s, m),
-                                     qos_profile_sensor_data)
+        StereoPair(self, g('left_topic'), g('right_topic'), self._process, g('rate_hz'))
         self.create_timer(1.0, self._publish_landmarks)
         self.get_logger().info('detector: backend {}, {} rule(s)'.format(g('backend'), len(self._rules)))
 
-    def _on_img(self, side, msg):
-        self._img[side] = msg
-        l, r = self._img['left'], self._img['right']
-        if l is None or r is None or None in self._info.values():
-            return
-        if (l.header.stamp.sec, l.header.stamp.nanosec) != (r.header.stamp.sec, r.header.stamp.nanosec):
-            return
-        now = time.time()
-        if now - self._last < 1.0 / self._g('rate_hz'):
-            return
-        self._last = now
-        self._img = {'left': None, 'right': None}
-        self._process(l, r)
-
-    def _process(self, lmsg, rmsg):
+    def _process(self, lmsg, rmsg, linfo, rinfo):
         left = image_to_bgr(lmsg)
         dets = self._detector.detect(left)
         if not dets:
             self._det_pub.publish(String(data='[]'))
             return
-        il, ir = self._info['left'], self._info['right']
-        fx, fy, cx, cy = il.p[0], il.p[5], il.p[2], il.p[6]
-        B = baseline_m(ir.p)
+        k = intrinsics(linfo, rinfo)
         s = 0.5
-        gl = cv2.resize(cv2.cvtColor(left, cv2.COLOR_BGR2GRAY), None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
-        gr = cv2.resize(cv2.cvtColor(image_to_bgr(rmsg), cv2.COLOR_BGR2GRAY), None, fx=s, fy=s,
-                        interpolation=cv2.INTER_AREA)
-        disp = self._matcher.compute(gl, gr).astype(np.float32) / 16.0
-        try:
-            tf = self._tf.lookup_transform(self._g('map_frame'), lmsg.header.frame_id,
-                                           Time.from_msg(lmsg.header.stamp))
-        except Exception:
-            try:   # sim/real timing jitter: fall back to the latest transform
-                tf = self._tf.lookup_transform(self._g('map_frame'), lmsg.header.frame_id, Time())
-            except Exception:
-                tf = None
+        disp = self._disparity(gray(left, s), gray(image_to_bgr(rmsg), s))
+        # at the image's time; sim/real timing jitter: fall back to the latest
+        frame = (self._g('map_frame'), lmsg.header.frame_id)
+        tf = self._tf.lookup(*frame, stamp=Time.from_msg(lmsg.header.stamp)) or self._tf.lookup(*frame)
         out = []
         t = time.time()
         for d in dets:
             item = {'label': d.label, 'confidence': d.confidence, 'bbox': list(d.bbox),
                     'distance': None, 'x': None, 'y': None}
-            pt = bbox_point(d.bbox, disp, fx, fy, cx, cy, B, scale=s)
+            pt = bbox_point(d.bbox, disp, k.fx, k.fy, k.cx, k.cy, k.baseline, scale=s)
             item['ranged_by'] = 'stereo'
             if pt is None:   # texture-less or at the image edge: use the floor contact point
-                pt = ground_point(d.bbox, fx, fy, cx, cy, self._g('cam_height'), self._g('cam_pitch'))
+                pt = ground_point(d.bbox, k.fx, k.fy, k.cx, k.cy, self._g('cam_height'), self._g('cam_pitch'))
                 item['ranged_by'] = 'floor'
             if pt is not None and pt[2] <= self._g('max_range'):
                 item['distance'] = round(pt[2], 2)
@@ -150,7 +112,7 @@ class DetectorNode(Node):
                     self._landmarks.add(d.label, item['x'], item['y'], d.confidence, t)
             out.append(item)
             self._apply_rules(item, t)
-        self._det_pub.publish(String(data=json.dumps(out)))
+        self._det_pub.publish(jmsg(out))
 
     def _apply_rules(self, det, t):
         for i, rule in enumerate(self._rules):
@@ -161,22 +123,13 @@ class DetectorNode(Node):
             self._rule_fired[i] = t
             task = dict(rule.get('task', {}), source='detector')
             task.setdefault('note', '{} at {} m'.format(det['label'], det['distance']))
-            self._task_pub.publish(String(data=json.dumps(task)))
+            self._task_pub.publish(jmsg(task))
             self.get_logger().warn('rule fired: {} -> {}'.format(det['label'], task.get('type')))
 
     def _publish_landmarks(self):
-        self._lm_pub.publish(String(data=json.dumps(self._landmarks.confirmed())))
-        self._cand_pub.publish(String(data=json.dumps(self._landmarks.candidates())))
+        self._lm_pub.publish(jmsg(self._landmarks.confirmed()))
+        self._cand_pub.publish(jmsg(self._landmarks.candidates()))
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = DetectorNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(DetectorNode, args)

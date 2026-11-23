@@ -2,7 +2,8 @@ import math
 
 import pytest
 
-from truck_bringup.scan_guard import NO_LIMIT, corridor_distances, limit_for, scan_to_points
+from truck_bringup.scan_guard import scan_to_points
+from truck_common.guards import corridor_distances
 
 
 def scan_with(hits, n=360, far=5.0):
@@ -36,10 +37,3 @@ def test_single_noisy_return_is_ignored():
     pts = scan_to_points(r, a0, inc, 0.15, 12.0, (0.0, 0.0, 0.0))
     front, _ = corridor_distances(pts, 0.25, -0.25, 0.2, min_points=2)
     assert front is None or front > 1.0
-
-
-def test_limits():
-    assert limit_for(None, 0.2, 0.7, 1.0) == NO_LIMIT
-    assert limit_for(0.1, 0.2, 0.7, 1.0) == 0.0
-    assert limit_for(0.45, 0.2, 0.7, 1.0) == pytest.approx(0.5)
-    assert limit_for(2.0, 0.2, 0.7, 1.0) == NO_LIMIT

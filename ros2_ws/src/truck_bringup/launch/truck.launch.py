@@ -21,13 +21,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
-
-def _static_tf(name, parent, child, xyz, rpy):
-    return Node(
-        package='tf2_ros', executable='static_transform_publisher', name=name,
-        arguments=['--x', str(xyz[0]), '--y', str(xyz[1]), '--z', str(xyz[2]),
-                   '--roll', str(rpy[0]), '--pitch', str(rpy[1]), '--yaw', str(rpy[2]),
-                   '--frame-id', parent, '--child-frame-id', child])
+from truck_bringup.rig_launch import rig_tfs, safety_and_detection
 
 
 def _setup(context, *args, **kwargs):
@@ -39,9 +33,8 @@ def _setup(context, *args, **kwargs):
                            LaunchConfiguration('map_name').perform(context))
     if not os.path.isdir(map_dir):
         os.makedirs(map_dir)
-    half_b = rig['baseline'] / 2.0
-    opt = (-1.5707963, 0.0, -1.5707963)   # camera link (x fwd) -> optical (z fwd)
-    return [
+    return rig_tfs(rig) + safety_and_detection(
+        rig, 'stereo/left/image_rect_color', 'stereo/right/image_rect') + [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
                 get_package_share_directory('fc_bridge'), 'launch', 'fc_bridge.launch.py')),
@@ -56,15 +49,6 @@ def _setup(context, *args, **kwargs):
                 'right_calibration': os.path.join(calib_dir, 'right.yaml'),
                 'publish_compressed': LaunchConfiguration('publish_compressed'),
             }]),
-        Node(package='truck_bringup', executable='detector_node', name='detector', output='screen',
-             condition=IfCondition(LaunchConfiguration('detector')),
-             parameters=[{'left_topic': 'stereo/left/image_rect_color',
-                          'right_topic': 'stereo/right/image_rect'}]),
-        Node(package='truck_bringup', executable='collision_guard', name='collision_guard',
-             output='screen', condition=IfCondition(LaunchConfiguration('guard')),
-             parameters=[{'left_topic': 'stereo/left/image_rect_color',
-                          'right_topic': 'stereo/right/image_rect',
-                          'cam_height': rig['cam_z'] + 0.1, 'cam_pitch': rig['cam_pitch']}]),
         # Rectified images for the collision guard, detector and SLAM - always
         # on with the cameras (SLAM may run on the PC, or not at all).
         Node(package='image_proc', executable='rectify_node', name='rectify_left',
@@ -73,25 +57,12 @@ def _setup(context, *args, **kwargs):
         Node(package='image_proc', executable='rectify_node', name='rectify_right',
              namespace='stereo/right', condition=IfCondition(LaunchConfiguration('cameras')),
              remappings=[('image', 'image_raw'), ('image_rect', 'image_rect')]),
-        Node(package='truck_bringup', executable='scan_guard', name='scan_guard', output='screen',
-             condition=IfCondition(PythonExpression(["'", LaunchConfiguration('lidar'), "' == 'true' and '",
-                                                     LaunchConfiguration('guard'), "' == 'true'"]))),
         # RPLidar A1 (Slamtec driver, built into the Jetson image)
         Node(package='rplidar_ros', executable='rplidar_node', name='rplidar', output='screen',
              condition=IfCondition(LaunchConfiguration('lidar')), respawn=True, respawn_delay=3.0,
              parameters=[{'serial_port': LaunchConfiguration('lidar_port'), 'serial_baudrate': 115200,
                           'frame_id': 'laser', 'angle_compensate': True, 'inverted': False,
                           'scan_mode': 'Sensitivity'}]),
-        _static_tf('tf_laser', 'base_link', 'laser',
-                   (rig.get('lidar_x', 0.12), rig.get('lidar_y', 0.0), rig.get('lidar_z', 0.13)),
-                   (0, 0, rig.get('lidar_yaw', 0.0))),
-        _static_tf('tf_fc', 'base_link', 'fc_link', (rig['fc_x'], rig['fc_y'], rig['fc_z']), (0, 0, 0)),
-        _static_tf('tf_left_cam', 'base_link', 'left_camera_link',
-                   (rig['cam_x'], rig['cam_y'] + half_b, rig['cam_z']), (0, rig['cam_pitch'], 0)),
-        _static_tf('tf_right_cam', 'base_link', 'right_camera_link',
-                   (rig['cam_x'], rig['cam_y'] - half_b, rig['cam_z']), (0, rig['cam_pitch'], 0)),
-        _static_tf('tf_left_opt', 'left_camera_link', 'left_camera_optical_frame', (0, 0, 0), opt),
-        _static_tf('tf_right_opt', 'right_camera_link', 'right_camera_optical_frame', (0, 0, 0), opt),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
                 get_package_share_directory('truck_tasks'), 'launch', 'tasks.launch.py')),
@@ -139,7 +110,7 @@ def generate_launch_description():
         DeclareLaunchArgument('detector', default_value='false',
                               description='object detector plugin (set backend/model in detector params)'),
         DeclareLaunchArgument('guard', default_value='true',
-                              description='stereo collision guard (needs rectified images: slam or rectify)'),
+                              description='collision guards: stereo (and lidar with lidar:=true)'),
         DeclareLaunchArgument('tasks', default_value='true',
                               description='task manager + navigator + explorer + web page :8080'),
         DeclareLaunchArgument('publish_compressed', default_value='false'),

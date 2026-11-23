@@ -28,12 +28,10 @@ arriving for cmd_timeout_s, the node commands a stop.
 Python 3.6 compatible on purpose: that is what ROS2 Humble runs on in the
 dustynv L4T R32.7.1 image for the original Jetson Nano.
 """
-import json
 import math
 import os
 import time
 
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
@@ -43,9 +41,6 @@ from std_msgs.msg import Bool, Float32, String
 
 from pymavlink import mavutil
 
-from fc_bridge.steering_monitor import SteeringMonitor, normalized_steering
-from fc_bridge.safety import FORWARD, REVERSE, SpeedCaps
-from fc_bridge.vision import VisionFeed
 from fc_bridge.conversions import (
     MILLIGRAVITY_TO_MPS2,
     ROVER_MODE_GUIDED,
@@ -54,6 +49,11 @@ from fc_bridge.conversions import (
     ned_attitude_to_enu_quaternion,
     twist_to_rover_attitude_target,
 )
+from fc_bridge.safety import FORWARD, REVERSE, SpeedCaps
+from fc_bridge.steering_monitor import SteeringMonitor, normalized_steering
+from fc_bridge.vision import VisionFeed
+from truck_common.guards import SOURCES, topic as guard_topic
+from truck_common.ros import Tf, jmsg, rpy_from_quat, run_node
 
 MAV = mavutil.mavlink
 
@@ -143,12 +143,12 @@ class MavlinkBridgeNode(Node):
         self.create_subscription(Twist, 'cmd_vel', self._on_cmd_vel, 10)
         # Speed caps from the collision guards (stereo: forward; lidar: both ways).
         self._caps = SpeedCaps(max_age=1.0)
-        for topic, source, direction in (('safety/speed_limit', 'stereo guard', FORWARD),
-                                         ('safety/lidar/forward_limit', 'lidar guard', FORWARD),
-                                         ('safety/lidar/reverse_limit', 'lidar guard (rear)', REVERSE)):
-            self.create_subscription(
-                Float32, topic,
-                lambda m, s=source, d=direction: self._caps.update(s, d, m.data, self._now()), 10)
+        for source in SOURCES:          # every collision guard, see truck_common/guards.py
+            for name, direction in (('forward_limit', FORWARD), ('reverse_limit', REVERSE)):
+                self.create_subscription(
+                    Float32, guard_topic(source, name),
+                    lambda m, s='{} guard'.format(source), d=direction: self._caps.update(s, d, m.data, self._now()),
+                    10)
         self._limit_note = 0.0
 
         # Link state.
@@ -188,10 +188,8 @@ class MavlinkBridgeNode(Node):
 
         self._vision = None
         if g('vision_pose'):
-            import tf2_ros
             self._vision = VisionFeed()
-            self._tf_buf = tf2_ros.Buffer()
-            self._tf_listener = tf2_ros.TransformListener(self._tf_buf, self)
+            self._tf = Tf(self)
             self._vision_sent = 0
             self._vision_stale = 0
             self._origin_sent = -math.inf
@@ -484,8 +482,8 @@ class MavlinkBridgeNode(Node):
         want = lin
         lin, ang, by = self._caps.apply(lin, ang, self._now())
         if by and self._now() - self._limit_note > 5.0:
-            self.get_logger().warn('collision guard: {} speed {:.2f} -> {:.2f} m/s'.format(
-                by, abs(want), abs(lin)))
+            self.get_logger().warn('{}: {} speed {:.2f} -> {:.2f} m/s'.format(
+                by, 'forward' if want > 0 else 'reverse', abs(want), abs(lin)))
             self._limit_note = self._now()
         stale = self._caps.stale_sources(self._now())
         if stale and self._now() - self._limit_note > 10.0:
@@ -515,20 +513,16 @@ class MavlinkBridgeNode(Node):
             return
         from rclpy.time import Time
         g = self._param
-        try:
-            t = self._tf_buf.lookup_transform(g('vision_map_frame'), g('vision_base_frame'), Time())
-        except Exception:
+        t = self._tf.lookup(g('vision_map_frame'), g('vision_base_frame'))
+        if t is None:
             self._vision_stale += 1
             return
         stamp = Time.from_msg(t.header.stamp)
-        age = (self.get_clock().now() - stamp).nanoseconds * 1e-9
-        if age > g('vision_max_age_s'):
+        if self._tf.age(t) > g('vision_max_age_s'):
             self._vision_stale += 1      # SLAM/VO lost: send nothing, the EKF times out ExtNav
             return
         tr, q = t.transform.translation, t.transform.rotation
-        roll = math.atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y))
-        pitch = math.asin(max(-1.0, min(1.0, 2 * (q.w * q.y - q.z * q.x))))
-        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        roll, pitch, yaw = rpy_from_quat(q)
         v = self._vision.update(stamp.nanoseconds * 1e-9, tr.x, tr.y, tr.z, roll, pitch, yaw,
                                 g('vision_pos_std'), g('vision_yaw_std'))
         usec = int(time.time() * 1e6)
@@ -582,7 +576,7 @@ class MavlinkBridgeNode(Node):
         report['recommend'] = changes
         report['notes'] = notes
         report['auto_apply'] = self._auto_apply
-        self._report_pub.publish(String(data=json.dumps(report)))
+        self._report_pub.publish(jmsg(report))
         for n in notes:
             self.get_logger().info('steering: ' + n)
         self._save_limits()
@@ -642,16 +636,7 @@ class MavlinkBridgeNode(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = MavlinkBridgeNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(MavlinkBridgeNode, args)
 
 
 if __name__ == '__main__':

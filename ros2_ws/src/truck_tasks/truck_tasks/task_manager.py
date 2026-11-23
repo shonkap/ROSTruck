@@ -5,11 +5,10 @@ tasks/submit; executor modules (navigator, explorer, future plugins)
 register the types they handle on tasks/modules and get work on
 tasks/dispatch. See ros_common.py for the full bus description.
 """
-import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from truck_tasks.ros_common import LATCHED, jmsg, jparse
+from truck_common.ros import LATCHED, jmsg, jparse, run_node
 from truck_tasks.task_core import TaskBoard
 
 
@@ -85,13 +84,4 @@ class TaskManager(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = TaskManager()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(TaskManager, args)

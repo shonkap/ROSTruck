@@ -123,7 +123,9 @@ def _setup(context, *args, **kwargs):
         'RGBD/CreateOccupancyGrid': 'true',
         'Grid/RangeMax': '6.0' if lidar else '4.0',
         'Grid/MaxGroundHeight': '0.05',
-        'Grid/MaxObstacleHeight': '1.0',
+        # Heights are in base_link (~0.13 m above the floor). Up to ~0.38 m above the
+        # floor - just over the truck - so table tops it drives under aren't walls.
+        'Grid/MaxObstacleHeight': '0.25',
         'Grid/CellSize': '0.05',
         'Grid/3D': 'false',
         'RGBD/LinearUpdate': '0.05',   # add a map node every 5 cm / ~5 deg
@@ -140,6 +142,13 @@ def _setup(context, *args, **kwargs):
     if lidar:
         slam_params.update(ICP_2D)
         slam_params.update({
+            # Scans and camera pairs come from different sensors: their stamps
+            # never match exactly, so with exact sync RTAB-Map got data only by
+            # coincidence and the map barely updated. Pair them approximately.
+            'approx_sync': True,
+            'approx_sync_max_interval': 0.1,
+            'sync_queue_size': 20,
+            'topic_queue_size': 10,
             'Reg/Strategy': '2',                  # loop closures: visual, refined with ICP
             'RGBD/NeighborLinkRefining': 'true',  # correct odometry links with scan matching
             'RGBD/ProximityBySpace': 'true',      # close loops by scan matching nearby nodes

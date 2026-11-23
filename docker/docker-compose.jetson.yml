@@ -1,9 +1,8 @@
 # On the Jetson (native Docker Engine + NVIDIA container runtime).
 # First time: ./scripts/jetson_setup.sh   (installs everything, builds this)
 #
-#   docker compose -f docker/docker-compose.jetson.yml up -d          # FC bridge + cameras
-#   docker compose -f docker/docker-compose.jetson.yml logs -f
-#   docker compose -f docker/docker-compose.jetson.yml run --rm truck bash   # a shell
+# Day to day: ./scripts/truck.sh start | stop | logs | shell | autostart on
+# What runs (lidar, SLAM, which map): docker/truck.env
 #
 # Calibrate the cameras (needs a monitor on the Jetson, or use --remote from the PC):
 #   xhost +local:   (once per login, on the Jetson desktop)
@@ -20,7 +19,8 @@ services:
     runtime: nvidia            # GPU/CUDA OpenCV, CSI camera ISP
     network_mode: host         # DDS discovery with the PC (RViz, SLAM, teleop)
     ipc: host                  # DDS shared-memory transport
-    restart: unless-stopped
+    restart: unless-stopped    # also brings it back if the launch dies
+    command: ["/bin/bash", "-c", "source /opt/rplidar_ws/install/setup.bash && source /workspace/ros2_ws/install/setup.bash && exec ros2 launch truck_bringup truck.launch.py $${TRUCK_LAUNCH_ARGS}"]
     # All of /dev, but only cameras (V4L2, major 81), the FC (ttyACM, major 166)
     # and USB-serial adapters (ttyUSB, major 188 - the RPLidar) are allowed - so a camera or the FC can be (re)plugged while
     # running and a missing /dev/videoN never stops the container from starting.
@@ -37,6 +37,7 @@ services:
       - 'c 188:* rmw'                                # ttyUSB: RPLidar (/dev/rplidar)
     environment:
       - ROS_DOMAIN_ID=0
+      - TRUCK_LAUNCH_ARGS=${TRUCK_LAUNCH_ARGS:-}
       - DISPLAY=${DISPLAY:-:0}
 
 volumes:

@@ -24,9 +24,11 @@ from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunch
                             OpaqueFunction, SetEnvironmentVariable)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
+
+from truck_bringup.rig_launch import rig_tfs, safety_and_detection
 
 # The repo is bind-mounted here in the sim container (docker-compose.sim.yml).
 REPO = os.environ.get('RCTRUCK_REPO', '/workspace')
@@ -43,21 +45,26 @@ def _ensure_generated():
         subprocess.check_call(['python3', os.path.join(room, 'make_room.py')])
 
 
-def _static_tf(name, parent, child, xyz, rpy):
-    return Node(
-        package='tf2_ros', executable='static_transform_publisher', name=name,
-        arguments=['--x', str(xyz[0]), '--y', str(xyz[1]), '--z', str(xyz[2]),
-                   '--roll', str(rpy[0]), '--pitch', str(rpy[1]), '--yaw', str(rpy[2]),
-                   '--frame-id', parent, '--child-frame-id', child],
-        parameters=[{'use_sim_time': True}])
+def _sim_already_running():
+    """True if something (another sim) already listens on SITL's MAVLink port."""
+    import socket
+    s = socket.socket()
+    s.settimeout(0.5)
+    try:
+        return s.connect_ex(('127.0.0.1', 5760)) == 0
+    finally:
+        s.close()
 
 
 def _launch_setup(context, *args, **kwargs):
+    if _sim_already_running():
+        raise RuntimeError('Another simulator is already running (SITL port 5760 is in use). '
+                           'Two sims fight over the same ports and topics - stop it first: '
+                           './sim/stop_sim.sh')
     _ensure_generated()
     world = LaunchConfiguration('world').perform(context)
     with open(os.path.join(SIM, 'gazebo', 'models', 'ground_pounder', 'rig.yaml')) as f:
         rig = yaml.safe_load(f)
-    half_b = rig['baseline'] / 2.0
     indoor = LaunchConfiguration('indoor').perform(context) == 'true'
     map_dir = os.path.join(REPO, 'maps', LaunchConfiguration('map_name').perform(context))
     localization = LaunchConfiguration('localization').perform(context)
@@ -106,35 +113,14 @@ def _launch_setup(context, *args, **kwargs):
             ],
             parameters=[{'use_sim_time': True}], output='log'),
 
-        Node(package='truck_bringup', executable='collision_guard', name='collision_guard',
-             parameters=[{'use_sim_time': True, 'cam_height': rig['base_link_z'] + rig['cam_z'],
-                          'cam_pitch': rig['cam_pitch'],
-                          'rules': LaunchConfiguration('detector_rules').perform(context)}],
-             condition=IfCondition(LaunchConfiguration('guard')), output='log'),
-        Node(package='truck_bringup', executable='detector_node', name='detector',
-             parameters=[{'use_sim_time': True, 'cam_height': rig['base_link_z'] + rig['cam_z'],
-                          'cam_pitch': rig['cam_pitch'],
-                          'rules': LaunchConfiguration('detector_rules').perform(context)}],
-             condition=IfCondition(LaunchConfiguration('detector')), output='log'),
         Node(package='truck_sim', executable='clock_relay', name='clock_relay', output='log'),
-        Node(package='truck_bringup', executable='scan_guard', name='scan_guard', output='log',
-             parameters=[{'use_sim_time': True}],
-             condition=IfCondition(PythonExpression(["'", LaunchConfiguration('lidar'), "' == 'true' and '",
-                                                     LaunchConfiguration('guard'), "' == 'true'"]))),
         Node(package='truck_sim', executable='stereo_relay', name='stereo_relay',
              parameters=[{'use_sim_time': True, 'baseline': rig['baseline']}], output='screen'),
 
-        # TF: base_link (chassis centre) -> FC + cameras. Same tree as the truck.
-        _static_tf('tf_fc', 'base_link', 'fc_link', (0, 0, 0), (0, 0, 0)),
-        _static_tf('tf_laser', 'base_link', 'laser', (rig['lidar_x'], 0, rig['lidar_z']), (0, 0, 0)),
-        _static_tf('tf_left_cam', 'base_link', 'left_camera_link',
-                   (rig['cam_x'], half_b, rig['cam_z']), (0, rig['cam_pitch'], 0)),
-        _static_tf('tf_right_cam', 'base_link', 'right_camera_link',
-                   (rig['cam_x'], -half_b, rig['cam_z']), (0, rig['cam_pitch'], 0)),
-        _static_tf('tf_left_opt', 'left_camera_link', 'left_camera_optical_frame',
-                   (0, 0, 0), (-1.5707963, 0, -1.5707963)),
-        _static_tf('tf_right_opt', 'right_camera_link', 'right_camera_optical_frame',
-                   (0, 0, 0), (-1.5707963, 0, -1.5707963)),
+        # Same TF tree, guards and detector as the truck (sim images are already rectified).
+        *rig_tfs(rig, sim=True),
+        *safety_and_detection(rig, 'stereo/left/image_raw', 'stereo/right/image_raw', sim=True, output='log',
+                              detector_params={'rules': LaunchConfiguration('detector_rules').perform(context)}),
 
         Node(
             package='fc_bridge', executable='mavlink_bridge_node', name='mavlink_bridge_node',
@@ -194,7 +180,7 @@ def generate_launch_description():
         DeclareLaunchArgument('detector', default_value='true',
                               description='object detector plugin (demo: finds the red bin)'),
         DeclareLaunchArgument('guard', default_value='true',
-                              description='stereo collision guard (forward speed limit)'),
+                              description='collision guards: stereo + lidar (the map guard is in tasks)'),
         DeclareLaunchArgument('map_name', default_value='sim_room',
                               description='map folder under maps/: RTAB-Map database, map PNG, places'),
         DeclareLaunchArgument('start_at', default_value='origin',

@@ -220,4 +220,3 @@ class SteeringMonitor(object):
                          'min_radius': self.min_radius[side]}
         out['straight_samples'] = len(self._straight)
         return out
-

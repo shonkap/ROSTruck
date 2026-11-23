@@ -233,7 +233,7 @@ if [ "$DO_BUILD" = 1 ]; then
 fi
 
 step "Done"
-echo "  Start the truck stack:   docker compose -f docker/docker-compose.jetson.yml up -d"
+echo "  Start the truck stack:   ./scripts/truck.sh start    (at every power-up: ./scripts/truck.sh autostart on)"
 echo "  Calibrate the cameras:   see README 'Stereo cameras' (scripts/stereo_calibrate.py)"
 [ "${NEED_RELOGIN:-0}" = 1 ] && echo -e "  \e[33mLog out and back in\e[0m (or reboot) so the new groups apply."
 exit 0

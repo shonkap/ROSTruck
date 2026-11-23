@@ -12,17 +12,15 @@ Voltage thresholds default to 0 = off (set them for your pack, e.g. 2S LiPo:
 low 7.0 V, critical 6.6 V). A voltage of 0 / NaN means "no battery measured"
 and never triggers. Status on watchdog/status.
 """
-import json
 import math
 import time
 
-import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
 
+from truck_common.ros import LATCHED, jmsg, jparse, run_node
 from truck_tasks.places_node import normalize
-from truck_tasks.ros_common import LATCHED, jparse
 
 
 class WatchdogLogic(object):
@@ -112,20 +110,11 @@ class WatchdogNode(Node):
                 home = 'home' if 'home' in self._places else [0.0, 0.0]
                 task = {'type': 'goto', 'waypoints': [home], 'priority': 9, 'source': 'watchdog',
                         'note': reason}
-            self._submit.publish(String(data=json.dumps(task)))
-        self._status.publish(String(data=json.dumps({
+            self._submit.publish(jmsg(task))
+        self._status.publish(jmsg({
             'voltage': self._voltage, 'link_ok': link_ok, 'stopped_for': self.logic.stopped_for,
-            'returned_home': self.logic.returned_home})))
+            'returned_home': self.logic.returned_home}))
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = WatchdogNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(WatchdogNode, args)

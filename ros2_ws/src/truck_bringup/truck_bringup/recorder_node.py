@@ -15,25 +15,24 @@ Not a task: recording runs alongside whatever the truck is doing. Stops on
 "stop", after `seconds` (capped by max_seconds), or when disk space drops
 below min_free_gb.
 """
-import json
 import os
 import shutil
 import signal
 import subprocess
 import time
 
-import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from truck_bringup.ros_qos import LATCHED
+from truck_common.ros import LATCHED, jmsg, jparse, run_node
 
 PRESETS = {
     'slam': ['/stereo/left/image_raw', '/stereo/left/camera_info', '/stereo/right/image_raw',
-             '/stereo/right/camera_info', '/fc/imu', '/tf', '/tf_static', '/odom', '/cmd_vel',
+             '/stereo/right/camera_info', '/scan', '/fc/imu', '/tf', '/tf_static', '/odom', '/cmd_vel',
              '/fc/status'],
     'light': ['/fc/imu', '/fc/status', '/fc/battery', '/fc/steering_report', '/tf', '/tf_static',
-              '/odom', '/map', '/cmd_vel', '/tasks/status', '/safety/obstacle_distance',
+              '/odom', '/map', '/cmd_vel', '/tasks/status',
+              '/safety/stereo/front_distance', '/safety/lidar/front_distance', '/safety/lidar/rear_distance',
               '/detections', '/object_landmarks', '/nav/path'],
 }
 
@@ -75,9 +74,8 @@ class RecorderNode(Node):
         return shutil.disk_usage(self._dir).free / 1e9
 
     def _on_command(self, msg):
-        try:
-            d = json.loads(msg.data)
-        except ValueError:
+        d = jparse(msg)
+        if not isinstance(d, dict):
             return
         if d.get('action') == 'start':
             self._start_rec(d.get('preset', 'slam'), float(d.get('seconds', 120)))
@@ -138,7 +136,7 @@ class RecorderNode(Node):
               'limit': self._limit, 'size_mb': round(dir_size_mb(os.path.join(self._dir, self._name)))
               if rec else None, 'free_gb': round(self._free_gb(), 1), 'message': self._message,
               'dir': self._dir, 'presets': sorted(PRESETS)}
-        self._status.publish(String(data=json.dumps(st)))
+        self._status.publish(jmsg(st))
 
     def destroy_node(self):
         self._stop_rec('stopped (shutdown)')
@@ -146,13 +144,4 @@ class RecorderNode(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = RecorderNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(RecorderNode, args)

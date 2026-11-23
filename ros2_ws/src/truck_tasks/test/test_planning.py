@@ -202,3 +202,16 @@ def test_three_point_turn_uses_lidar_rear_distance():
     # open map behind, but the lidar sees something 0.1 m behind the bumper -> go forward
     v, w = tp.step(0.0, (2.0, 2.0, 0.0), (1.0, 2.5), gm, 0.4, front_dist=None, rear_dist=0.1)
     assert v > 0
+
+
+def test_plan_goes_around_a_live_obstacle_and_path_blocked_sees_it():
+    from truck_tasks.planning import path_blocked
+    g = np.zeros((40, 60), np.int16)            # 3 x 2 m empty room, 5 cm cells
+    room = GridMap(g.ravel().tolist(), 60, 40, 0.05, 0.0, 0.0)
+    straight = plan(room, (0.3, 1.0), (2.7, 1.0), 0.2)
+    cat = np.array([[1.5 + dx, 1.0 + dy] for dx in (-0.1, 0, 0.1) for dy in (-0.1, 0, 0.1)])
+    assert path_blocked(straight, cat, 0.2, start_xy=(0.3, 1.0), horizon=3.0)
+    around = plan(room, (0.3, 1.0), (2.7, 1.0), 0.2, obstacles=cat)
+    assert around is not None and not path_blocked(around, cat, 0.2, horizon=3.0)
+    assert max(abs(y - 1.0) for _, y in around) > 0.25          # it actually detours
+    assert room.grid.max() == 0                                  # the map itself is untouched

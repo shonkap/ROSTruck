@@ -17,6 +17,8 @@ import time
 
 from pymavlink import mavutil
 
+from fc_link import default_conn, fetch_params, set_param, wait_autopilot, write_parm
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKUPS = os.path.join(REPO, 'backups')
 
@@ -32,50 +34,6 @@ PROFILES = {
 }
 REBOOT_NEEDED = {'GPS1_TYPE', 'VISO_TYPE', 'EK3_SRC1_POSXY', 'EK3_SRC1_VELXY', 'EK3_SRC1_POSZ',
                  'EK3_SRC1_VELZ', 'EK3_SRC1_YAW', 'COMPASS_USE'}
-
-
-def default_conn():
-    for path in ('/dev/fc0', '/dev/ttyACM0'):
-        if os.path.exists(path):
-            return path
-    return '/dev/ttyACM0'
-
-
-def name_of(msg):
-    n = msg.param_id
-    if isinstance(n, bytes):
-        n = n.decode('ascii', 'ignore')
-    return n.rstrip('\x00')
-
-
-def fetch_all(m, timeout=40.0):
-    m.mav.param_request_list_send(m.target_system, m.target_component)
-    params, total, last = {}, None, time.time()
-    end = time.time() + timeout
-    while time.time() < end and time.time() - last < 3.0:
-        msg = m.recv_match(type='PARAM_VALUE', blocking=True, timeout=0.5)
-        if msg is None:
-            continue
-        last = time.time()
-        params[name_of(msg)] = (msg.param_value, msg.param_type)
-        total = msg.param_count
-        if total and len(params) >= total:
-            break
-    return params, total
-
-
-def set_param(m, name, value, ptype, tries=3):
-    for _ in range(tries):
-        m.mav.param_set_send(m.target_system, m.target_component, name.encode('ascii'),
-                             float(value), ptype)
-        end = time.time() + 3.0
-        while time.time() < end:
-            msg = m.recv_match(type='PARAM_VALUE', blocking=True, timeout=0.5)
-            if msg is not None and name_of(msg) == name:
-                if abs(msg.param_value - float(value)) < 1e-4:
-                    return msg.param_value
-                break
-    return None
 
 
 def main():
@@ -104,14 +62,12 @@ def main():
         ap.error('nothing to change (give NAME=VALUE, --profile or --restore)')
 
     m = mavutil.mavlink_connection(args.conn, baud=115200, source_system=255)
-    hb = m.wait_heartbeat(timeout=10)
-    if hb is None:
-        print('no heartbeat on ' + args.conn)
+    if wait_autopilot(m) is None:
+        print('no autopilot heartbeat on ' + args.conn)
         return 1
-    m.target_system, m.target_component = hb.get_srcSystem(), hb.get_srcComponent()
     print('connected to system {} on {}; downloading all params for the backup...'.format(
         m.target_system, args.conn))
-    params, total = fetch_all(m)
+    params, total = fetch_params(m)
     if not total or len(params) < total:
         print('only got {}/{} params - refusing to change anything without a full backup'.format(
             len(params), total))
@@ -119,10 +75,7 @@ def main():
     os.makedirs(BACKUPS, exist_ok=True)
     stamp = time.strftime('%Y-%m-%d_%H%M%S')
     backup = os.path.join(BACKUPS, 'fc_params_{}.parm'.format(stamp))
-    with open(backup, 'w') as f:
-        f.write('# full FC parameter backup before fc_set_params.py, {}\n'.format(stamp))
-        for k in sorted(params):
-            f.write('{},{:g}\n'.format(k, params[k][0]))
+    write_parm(backup, params, 'full FC parameter backup before fc_set_params.py, ' + stamp)
     print('backup: {} ({} params)'.format(os.path.relpath(backup, REPO), len(params)))
 
     todo = []

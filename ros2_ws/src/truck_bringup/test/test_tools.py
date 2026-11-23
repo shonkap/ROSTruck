@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from truck_bringup import camera_info_yaml
-from truck_bringup.map_saver import grid_to_image, map_stats
+from truck_common.maps import trinary_image
 
 
 def test_calibration_yaml_round_trip(tmp_path):
@@ -59,19 +59,13 @@ def test_baseline_from_projection():
     assert camera_info_yaml.baseline_m([0.0] * 12) == 0.0
 
 
-def test_grid_to_image_flips_rows_and_maps_values():
+def test_trinary_image_flips_rows_and_maps_values():
     # 2x3 grid, row 0 = bottom of the map: [free, occupied, unknown]
-    data = [0, 100, -1,
-            50, 0, 0]
-    img = grid_to_image(data, 3, 2)
-    assert img.shape == (2, 3)
-    # bottom map row ends up as the LAST image row
-    assert list(img[1]) == [254, 0, 205]
-    # 50 is neither free (<25) nor occupied (>=65) -> unknown grey
-    assert list(img[0]) == [205, 254, 254]
-    s = map_stats(data)
-    assert s == {'known': 5, 'free': 3, 'occupied': 1, 'total': 6}
-    assert img.dtype == np.uint8
+    g = np.array([0, 100, -1, 50, 0, 0], np.int16).reshape(2, 3)
+    img = trinary_image(g)
+    assert img.shape == (2, 3) and img.dtype == np.uint8
+    assert list(img[1]) == [254, 0, 205]          # bottom map row = last image row
+    assert list(img[0]) == [205, 254, 254]        # 50: neither free nor occupied
 
 
 def test_best_pair_matches_closest_frames_across_phase_offset():

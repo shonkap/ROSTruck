@@ -8,7 +8,7 @@ def test_most_restrictive_fresh_cap_wins_and_curvature_kept():
     s.update('stereo', FORWARD, 0.4, 0.0)
     s.update('lidar', FORWARD, 0.2, 0.0)
     lin, ang, by = s.apply(0.5, 0.5, 0.5)
-    assert (lin, by) == (0.2, FORWARD) and ang == pytest.approx(0.2)   # curvature 1.0 kept
+    assert (lin, by) == (0.2, 'lidar') and ang == pytest.approx(0.2)   # curvature 1.0 kept
 
 
 def test_reverse_cap_only_from_lidar():
@@ -17,7 +17,7 @@ def test_reverse_cap_only_from_lidar():
     assert s.apply(-0.2, 0.3, 0.1) == (-0.2, 0.3, None)   # reversing away is fine
     s.update('lidar_rear', REVERSE, 0.0, 0.0)      # ...unless something is behind too
     lin, ang, by = s.apply(-0.2, 0.3, 0.1)
-    assert lin == 0.0 and by == REVERSE
+    assert lin == 0.0 and by == 'lidar_rear'
 
 
 def test_stale_guard_is_ignored_and_reported():
@@ -26,3 +26,12 @@ def test_stale_guard_is_ignored_and_reported():
     assert s.apply(0.3, 0.0, 0.5)[0] == 0.0
     assert s.apply(0.3, 0.0, 2.0)[0] == 0.3
     assert s.stale_sources(2.0) == ['stereo']
+
+
+def test_one_guard_caps_both_directions_independently():
+    s = SpeedCaps(max_age=1.0)
+    s.update('lidar guard', FORWARD, 0.0, 0.0)      # wall ahead
+    s.update('lidar guard', REVERSE, 0.3, 0.0)      # room behind
+    assert s.apply(0.5, 0.0, 0.1)[0] == 0.0
+    assert s.apply(-0.5, 0.0, 0.1)[0] == -0.3
+    assert s.stale_sources(5.0) == ['lidar guard']

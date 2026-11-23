@@ -11,12 +11,12 @@ odometry purely to *grade* SLAM at the end:
 """
 import math
 
-import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import String
+from truck_common.ros import run_node
 
 # Circles of radius V / W = 1 m, one full lap each (2*pi / W seconds), so the
 # truck returns to the start between laps and stays clear of the furniture.
@@ -122,14 +122,4 @@ class ExploreRoom(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = ExploreRoom()
-    try:
-        while rclpy.ok() and not node.done:
-            rclpy.spin_once(node, timeout_sec=0.1)
-    except KeyboardInterrupt:
-        node._pub.publish(Twist())
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(ExploreRoom, args, until=lambda n: n.done, on_interrupt=lambda n: n._pub.publish(Twist()))

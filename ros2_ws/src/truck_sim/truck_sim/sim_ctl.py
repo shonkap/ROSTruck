@@ -30,7 +30,19 @@ def main(argv=None):
                     help='how long to wait for SITL/the EKF to be ready')
     args = ap.parse_args(argv)
 
-    m = mavutil.mavlink_connection(args.conn, source_system=254)
+    m = None
+    end = time.time() + args.timeout
+    while m is None:
+        try:
+            m = mavutil.mavlink_connection(args.conn, source_system=254)
+        except OSError:
+            if time.time() > end:
+                print("Can't reach ArduPilot SITL on {} - is the sim running?\n"
+                      "  ros2 launch truck_sim sim.launch.py   (if it's broken: ./sim/stop_sim.sh first)"
+                      .format(args.conn))
+                return 1
+            print('waiting for SITL on {} ...'.format(args.conn))
+            time.sleep(3)
     hb = m.wait_heartbeat(timeout=args.timeout)
     if hb is None:
         print('no heartbeat on ' + args.conn)

@@ -1,6 +1,9 @@
 # Physical layout of the REAL truck (measure yours; metres / radians).
 # base_link = centre of the chassis, x forward, y left, z up.
 # Simulation equivalents live in sim/gazebo/models/ground_pounder/make_model.py.
+base_link_z: 0.13  # base_link (chassis centre) above the floor - measure it
+truck_height: 0.32 # top of the highest part (lidar) above the floor: the truck drives
+                   # under anything higher (tables), so measure it - see collision guards
 fc_x: 0.0          # where the FC (its IMU) sits relative to base_link
 fc_y: 0.0
 fc_z: 0.0

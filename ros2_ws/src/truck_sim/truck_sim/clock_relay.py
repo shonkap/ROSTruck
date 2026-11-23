@@ -7,10 +7,10 @@ core just receiving clock messages. This node is the only 1 kHz subscriber
 10 ms timer resolution, plenty for 10-20 Hz control loops).
 Sim only - the real truck runs on wall time.
 """
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rosgraph_msgs.msg import Clock
+from truck_common.ros import run_node
 
 
 class ClockRelay(Node):
@@ -31,13 +31,4 @@ class ClockRelay(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = ClockRelay()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    return run_node(ClockRelay, args)
