@@ -55,7 +55,10 @@ RUN /bin/bash -c "source ${ROS_SETUP} && source /opt/rplidar_ws/install/setup.ba
     && chown -R ${USERNAME}:${USERNAME} /workspace
 
 USER ${USERNAME}
-RUN echo "source ${ROS_SETUP}" >> ~/.bashrc \
+# ~/.ros must exist (owned by dev) so the truck-ros-home volume inherits that
+# owner; otherwise Docker creates it root-owned and ros2 launch cannot log.
+RUN mkdir -p ~/.ros/log \
+    && echo "source ${ROS_SETUP}" >> ~/.bashrc \
     && echo "source /opt/rplidar_ws/install/setup.bash" >> ~/.bashrc \
     && echo "source /workspace/ros2_ws/install/setup.bash" >> ~/.bashrc
 
