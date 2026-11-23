@@ -29,6 +29,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from truck_bringup.rig_launch import rectify_container
 
 # 2D lidar scan matching (RPLidar A1: ~360 points, 5.5 Hz).
 ICP_2D = {
@@ -159,13 +160,10 @@ def _setup(context, *args, **kwargs):
         slam_params['Grid/Sensor'] = '1'          # grid from stereo depth
 
     nodes = [odom_node]
-    for side, out in (('left', 'image_rect_color'), ('right', 'image_rect')):
-        if rectify:
-            nodes.append(Node(
-                package='image_proc', executable='rectify_node', name='rectify_' + side,
-                namespace='stereo/' + side,
-                remappings=[('image', 'image_raw'), ('image_rect', out)],
-                parameters=[{'use_sim_time': use_sim_time}]))
+    if rectify:
+        nodes.append(rectify_container([('left', 'image_rect_color'), ('right', 'image_rect')],
+                                       params={'use_sim_time': use_sim_time}))
+    for side in ('left', 'right'):
         if a('compressed') == 'true':
             nodes.append(Node(
                 package='image_transport', executable='republish', name='decompress_' + side,

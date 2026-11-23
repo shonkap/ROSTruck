@@ -21,7 +21,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
-from truck_bringup.rig_launch import rig_tfs, safety_and_detection
+from truck_bringup.rig_launch import rectify_container, rig_tfs, safety_and_detection
 
 
 def _setup(context, *args, **kwargs):
@@ -51,12 +51,8 @@ def _setup(context, *args, **kwargs):
             }]),
         # Rectified images for the collision guard, detector and SLAM - always
         # on with the cameras (SLAM may run on the PC, or not at all).
-        Node(package='image_proc', executable='rectify_node', name='rectify_left',
-             namespace='stereo/left', condition=IfCondition(LaunchConfiguration('cameras')),
-             remappings=[('image', 'image_raw'), ('image_rect', 'image_rect_color')]),
-        Node(package='image_proc', executable='rectify_node', name='rectify_right',
-             namespace='stereo/right', condition=IfCondition(LaunchConfiguration('cameras')),
-             remappings=[('image', 'image_raw'), ('image_rect', 'image_rect')]),
+        rectify_container([('left', 'image_rect_color'), ('right', 'image_rect')],
+                          condition=IfCondition(LaunchConfiguration('cameras'))),
         # RPLidar A1 (Slamtec driver, built into the Jetson image)
         Node(package='rplidar_ros', executable='rplidar_node', name='rplidar', output='screen',
              condition=IfCondition(LaunchConfiguration('lidar')), respawn=True, respawn_delay=3.0,

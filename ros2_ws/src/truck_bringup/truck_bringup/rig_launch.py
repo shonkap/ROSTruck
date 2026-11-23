@@ -5,7 +5,8 @@ mounts), so the TF tree and the sensor-side safety nodes are built here once.
 """
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
-from launch_ros.actions import Node
+from launch_ros.actions import ComposableNodeContainer, Node
+from launch_ros.descriptions import ComposableNode
 
 OPTICAL = (-1.5707963, 0.0, -1.5707963)    # camera link (x forward) -> optical (z forward)
 
@@ -16,6 +17,28 @@ def all_true(*names):
     for i, n in enumerate(names):
         expr += [(' and ' if i else '') + "'", LaunchConfiguration(n), "' == 'true'"]
     return IfCondition(PythonExpression(expr))
+
+
+
+def rectify_container(sides, params=None, condition=None):
+    """Stereo rectification: image_proc::RectifyNode per side, in one container.
+
+    sides: [(side, output_topic)], e.g. [('left', 'image_rect_color')] - reads
+    stereo/<side>/image_raw (+camera_info), publishes stereo/<side>/<output>.
+    A component, not the rectify_node executable: the Jetson's from-source
+    Humble (dustynv r32.7.1) only ships image_proc as components.
+    """
+    return ComposableNodeContainer(
+        name='rectify_container', namespace='', package='rclcpp_components',
+        executable='component_container', output='screen', condition=condition,
+        parameters=[params or {}],
+        composable_node_descriptions=[
+            ComposableNode(
+                package='image_proc', plugin='image_proc::RectifyNode',
+                name='rectify_' + side, namespace='stereo/' + side,
+                remappings=[('image', 'image_raw'), ('image_rect', out)],
+                parameters=[params or {}])
+            for side, out in sides])
 
 
 def static_tf(name, parent, child, xyz, rpy=(0, 0, 0), sim=False):

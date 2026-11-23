@@ -24,6 +24,7 @@
   <exec_depend>python3-yaml</exec_depend>
   <!-- SLAM / calibration; optional on the Jetson until RTAB-Map is built there -->
   <exec_depend>image_proc</exec_depend>
+  <exec_depend>rclcpp_components</exec_depend>
   <exec_depend>rtabmap_odom</exec_depend>
   <exec_depend>rtabmap_slam</exec_depend>
   <exec_depend>camera_calibration</exec_depend>
